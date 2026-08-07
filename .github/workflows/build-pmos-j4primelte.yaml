@@ -184,21 +184,19 @@ jobs:
             echo "ℹ️  dtbtool zaten var"
           fi
 
-          # Fix 2 + 3: Python ile build() ve package() patch'le
-          # sed yerine Python kullanıyoruz — ${makeopts} gibi shell değişkenleri
-          # sed regex'ini bozuyor
-          python3 << 'PYEOF'
-          import re
+          # Fix 2 + 3: Python ile patch
+          # Single-quote heredoc içinde $VAR expand olmaz
+          # Bu yüzden path'i env variable olarak Python'a geçiyoruz
+          LINUX_APKBUILD="$LINUX_APKBUILD" python3 << 'PYEOF'
+          import re, os
 
-          path = "$LINUX_APKBUILD"
+          path = os.environ['LINUX_APKBUILD']
 
           with open(path, 'r') as f:
               content = f.read()
 
-          # Fix 2: build() içine dtbTool ekle (make satırından sonra)
           if 'dtbTool' not in content:
-              dtbtool_cmd = '\n\t# QCDT: Qualcomm Concatenated Device Tree\n\tdtbTool -s 2048 -o arch/arm64/boot/dt.img arch/arm64/boot/dts/qcom/'
-              # make ile başlayan satırı bul, ardına ekle
+              dtbtool_cmd = '\n\t# QCDT\n\tdtbTool -s 2048 -o arch/arm64/boot/dt.img arch/arm64/boot/dts/qcom/'
               content = re.sub(
                   r'(\tmake\s+\$\{makeopts\}[^\n]*)',
                   r'\1' + dtbtool_cmd,
@@ -209,10 +207,8 @@ jobs:
           else:
               print("ℹ️  dtbTool zaten var")
 
-          # Fix 3: package() içine dt.img install ekle
           if 'dt.img' not in content:
               dtimg_install = '\n\tinstall -Dm644 arch/arm64/boot/dt.img "$pkgdir"/boot/dt.img'
-              # Image install satırını bul, ardına ekle
               content = re.sub(
                   r'(\tinstall[^\n]*Image[^\n]*)',
                   r'\1' + dtimg_install,
