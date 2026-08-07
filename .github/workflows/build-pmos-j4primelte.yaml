@@ -17,21 +17,33 @@
 # ── KRİTİK NOTLAR ──────────────────────────────────────────────────
 #
 #   1) PMB_WORK dizini ASLA manuel oluşturulmamalı.
-#      Boş/sürümsüz dizin → pmbootstrap "version  → 8" migrate
-#      hatasına düşer → exit 2.
+#      Boş/sürümsüz dizin → "version  → 8" migrate hatası → exit 2.
 #
 #   2) Config'de boş string olmamalı.
-#      pmbootstrap init validation regex: ^([-.+\w]+)(,[-.+\w]+)*$
-#      Bu regex boş string'i reddeder.
-#      extra_packages → boşsa "none" kullan.
-#      keymap         → boşsa config'e yazma.
+#      Validation regex: ^([-.+\w]+)(,[-.+\w]+)*$
+#      extra_packages boşsa "none" kullan.
+#      keymap boşsa config'e hiç yazma.
 #
-#   3) pmaports ana branch'i "main"dir, "master" değil.
+#   3) "channel" pmbootstrap v3'te geçerli bir config key'i DEĞİLDİR.
+#      Geçerli key'ler: aports, build_default_device_arch,
+#      build_pkgs_on_install, ccache_size, device, extra_packages,
+#      extra_space, hostname, is_default_channel, jobs, kernel,
+#      keymap, locale, mirrors.*, providers, service_manager,
+#      ssh_key_glob, ssh_keys, sudo_timer, timezone, ui, ui_extras,
+#      user, work
+#      Channel, pmaports'un hangi branch'inin klonlandığıyla belirlenir:
+#        edge   → pmaports "main" branch
+#        v24.12 → pmaports "v24.12" branch
+#
+#   4) "nonfree_firmware" ve "nonfree_userland" da geçersiz key'lerdir.
+#      Bu ayarlar pmbootstrap v3'te kaldırılmış.
+#
+#   5) pmaports ana branch'i "main"dir, "master" değil.
 #      pmbootstrap v3.11.1: git show origin/main:channels.cfg
 #
-#   4) --no-single-branch zorunlu: origin/main tracking ref'i için.
+#   6) --no-single-branch zorunlu: origin/main tracking ref'i için.
 #
-#   5) "yes | pmbootstrap init" set -euo pipefail ile uyumsuz.
+#   7) "yes | pmbootstrap init" set -euo pipefail ile uyumsuz.
 #      SIGPIPE (exit 141) → pipeline fail. Çözüm: PIPESTATUS[1].
 #
 # ── GITHUB SECRETS ─────────────────────────────────────────────────
@@ -61,7 +73,7 @@ on:
           - fbkeyboard
           - console
       channel:
-        description: "postmarketOS channel"
+        description: "postmarketOS channel (pmaports branch'ini belirler)"
         required: false
         default: "edge"
         type: choice
@@ -87,7 +99,6 @@ env:
   DEVICE:         "samsung-j4primelte"
   UI:             ${{ github.event.inputs.ui             || 'phosh' }}
   CHANNEL:        ${{ github.event.inputs.channel        || 'edge'  }}
-  # Boş string yerine "none" kullan — pmbootstrap validation regex boş string'i reddeder
   EXTRA_PACKAGES: ${{ github.event.inputs.extra_packages || 'none'  }}
   KEYMAP:         ${{ github.event.inputs.keymap         || 'none'  }}
   PMB_WORK:       "/home/runner/.local/var/pmbootstrap"
@@ -218,18 +229,38 @@ jobs:
 
       # ────────────────────────────────────────────────────────────
       # ADIM 7 — pmaports klonlama + j4primelte overlay
+      #
+      #   Channel → pmaports branch eşleştirmesi:
+      #     edge   → main branch
+      #     v24.12 → v24.12 branch
+      #
+      #   Channel config key'i değil, git branch'idir!
       # ────────────────────────────────────────────────────────────
       - name: Clone pmaports + overlay j4primelte packages
         shell: bash
         run: |
           set -euo pipefail
 
+          # ── Channel → pmaports branch eşleştirmesi ─────────────
+          if [ "$CHANNEL" = "edge" ]; then
+            PMAPORTS_BRANCH="main"
+          else
+            # v24.12 gibi release channel'lar için branch adı aynı
+            PMAPORTS_BRANCH="$CHANNEL"
+          fi
+
+          echo "▶ Channel     : $CHANNEL"
+          echo "▶ pmaports branch: $PMAPORTS_BRANCH"
+
           # ── a) Upstream pmaports'u klonla ─────────────────────
+          # --no-single-branch: origin/main tracking ref'i için ZORUNLU
+          # pmbootstrap: git show origin/main:channels.cfg
+          echo ""
           echo "▶ Upstream pmaports klonlanıyor..."
           git clone \
             --depth=1 \
             --no-single-branch \
-            --branch main \
+            --branch "$PMAPORTS_BRANCH" \
             "$UPSTREAM_URL" \
             "$PMB_APORTS"
 
@@ -240,8 +271,8 @@ jobs:
           git -C "$PMB_APORTS" branch -r
 
           # pmbootstrap'ın çalıştıracağı komutu önceden test et
-          echo "▶ channels.cfg erişim testi (origin/main):"
-          git -C "$PMB_APORTS" show origin/main:channels.cfg | head -5
+          echo "▶ channels.cfg erişim testi (origin/${PMAPORTS_BRANCH}):"
+          git -C "$PMB_APORTS" show "origin/${PMAPORTS_BRANCH}:channels.cfg" | head -5
           echo "✅ channels.cfg okunabilir"
 
           # ── b) j4primelte fork'unu geçici dizine klonla ───────
@@ -293,22 +324,20 @@ jobs:
       # ────────────────────────────────────────────────────────────
       # ADIM 8 — pmbootstrap config dosyasını yaz
       #
-      #   KRİTİK — Boş string kuralları:
+      #   Geçerli config key'leri (pmbootstrap v3.11.1):
+      #     aports, build_default_device_arch, build_pkgs_on_install,
+      #     ccache_size, device, extra_packages, extra_space,
+      #     hostname, is_default_channel, jobs, kernel, keymap,
+      #     locale, mirrors.*, providers, service_manager,
+      #     ssh_key_glob, ssh_keys, sudo_timer, timezone,
+      #     ui, ui_extras, user, work
       #
-      #   pmbootstrap init validation regex: ^([-.+\w]+)(,[-.+\w]+)*$
-      #   Bu regex boş string'i REDDEDER.
+      #   KALDIRILDI (artık geçersiz):
+      #     channel          → git branch ile belirlenir
+      #     nonfree_firmware → pmbootstrap v3'te kaldırıldı
+      #     nonfree_userland → pmbootstrap v3'te kaldırıldı
       #
-      #   extra_packages:
-      #     - Boşsa "none" kullan (pmbootstrap'ın kabul ettiği özel değer)
-      #     - Config'e boş string yazma
-      #
-      #   keymap:
-      #     - Boşsa config'e yazma (satırı hiç ekleme)
-      #     - pmbootstrap keymap için boş string kabul etmez
-      #
-      #   KRİTİK — mkdir -p "$PMB_WORK" YAPILMIYOR:
-      #     Boş/sürümsüz work dizini → "version  → 8" migrate hatası.
-      #     Work dizinini pmbootstrap init kendisi oluşturmalı.
+      #   KRİTİK: mkdir -p "$PMB_WORK" YAPILMIYOR!
       # ────────────────────────────────────────────────────────────
       - name: Write pmbootstrap config
         shell: bash
@@ -318,22 +347,17 @@ jobs:
           # Sadece config dizinini oluştur — PMB_WORK'e DOKUNMA!
           mkdir -p "$HOME/.config"
 
-          # extra_packages boş gelirse "none" kullan
+          # extra_packages boşsa "none" kullan
           EXTRA_PACKAGES_CFG="${EXTRA_PACKAGES:-none}"
-          if [ -z "$EXTRA_PACKAGES_CFG" ]; then
-            EXTRA_PACKAGES_CFG="none"
-          fi
-
-          # keymap boş veya "none" gelirse config'e yazma
-          KEYMAP_CFG="${KEYMAP:-}"
+          [ -z "$EXTRA_PACKAGES_CFG" ] && EXTRA_PACKAGES_CFG="none"
 
           CFG="$HOME/.config/pmbootstrap_v3.cfg"
 
-          # Base config — keymap hariç
           cat > "$CFG" <<EOF
           [pmbootstrap]
           aports = ${PMB_APORTS}
           build_default_device_arch = True
+          build_pkgs_on_install = True
           ccache_size = 5G
           device = ${DEVICE}
           extra_packages = ${EXTRA_PACKAGES_CFG}
@@ -341,23 +365,23 @@ jobs:
           jobs = $(nproc)
           kernel = downstream
           locale = en_US.UTF-8
-          nonfree_firmware = True
-          nonfree_userland = False
           ssh_keys = False
           ssh_key_glob = ~/.ssh/id_*.pub
+          sudo_timer = False
           timezone = Europe/Istanbul
           ui = ${UI}
+          ui_extras = False
           user = pmos
           work = ${PMB_WORK}
-          channel = ${CHANNEL}
           EOF
 
           # keymap sadece geçerli bir değer varsa ekle
-          if [ -n "$KEYMAP_CFG" ] && [ "$KEYMAP_CFG" != "none" ]; then
-            echo "keymap = ${KEYMAP_CFG}" >> "$CFG"
-            echo "ℹ️  Keymap eklendi: $KEYMAP_CFG"
+          # Boş string validation regex'ini geçemez
+          if [ -n "$KEYMAP" ] && [ "$KEYMAP" != "none" ]; then
+            echo "keymap = ${KEYMAP}" >> "$CFG"
+            echo "ℹ️  Keymap eklendi: $KEYMAP"
           else
-            echo "ℹ️  Keymap atlandı (boş/none — validation hatasını önler)"
+            echo "ℹ️  Keymap atlandı (boş/none)"
           fi
 
           echo "▶ Config dosyası ($CFG):"
@@ -367,20 +391,14 @@ jobs:
       # ────────────────────────────────────────────────────────────
       # ADIM 9 — pmbootstrap init (work dizinini oluşturur)
       #
-      #   SIGPIPE sorunu ve çözümü:
-      #     "yes | pmbootstrap init" pipeline'ında "yes" komutu,
-      #     pmbootstrap çıktıktan sonra SIGPIPE (exit 141) alır.
-      #     set -euo pipefail bunu gerçek hata sayar.
+      #   SIGPIPE sorunu:
+      #     "yes | pmbootstrap init" → "yes" SIGPIPE (exit 141) alır
+      #     set -euo pipefail bunu hata sayar.
       #     Çözüm: pipefail geçici kapat + PIPESTATUS[1] kontrol et.
-      #
-      #   Config önceden yazıldığı için init:
-      #     - Soruları config'den gelen varsayılanlarla gösterir
-      #     - Work dizinini doğru sürüm metadata'sıyla oluşturur
       # ────────────────────────────────────────────────────────────
       - name: Initialize pmbootstrap work directory
         shell: bash
         run: |
-          # pipefail geçici kapat — "yes" SIGPIPE alacak, bu normal
           set +o pipefail
 
           echo "▶ pmbootstrap init çalıştırılıyor..."
@@ -410,16 +428,15 @@ jobs:
           echo "▶ Work dizini içeriği:"
           ls -la "$PMB_WORK/" || true
 
-          # ── Kritik config değerlerini init sonrası override et ─
-          # init bazı değerleri sıfırlayabilir
-          pmbootstrap config device  "$DEVICE"
-          pmbootstrap config ui      "$UI"
-          pmbootstrap config channel "$CHANNEL"
-          pmbootstrap config kernel  "downstream"
+          # ── Kritik config değerlerini override et ─────────────
+          # Sadece geçerli key'leri kullan!
+          pmbootstrap config device                    "$DEVICE"
+          pmbootstrap config ui                        "$UI"
+          pmbootstrap config kernel                    "downstream"
           pmbootstrap config build_default_device_arch "True"
-          pmbootstrap config nonfree_firmware "True"
+          pmbootstrap config build_pkgs_on_install     "True"
 
-          # extra_packages: boşsa "none" kullan
+          # extra_packages: boşsa "none"
           EXTRA_CFG="${EXTRA_PACKAGES:-none}"
           [ -z "$EXTRA_CFG" ] && EXTRA_CFG="none"
           pmbootstrap config extra_packages "$EXTRA_CFG"
@@ -629,4 +646,4 @@ jobs:
         run: |
           pmbootstrap -y zap                   2>/dev/null || true
           sudo rm -rf "${PMB_WORK}/chroot_"*   2>/dev/null || true
-          echo "🧹 Temizlik tamamlandı"
+          echo "🧹 Temizlik tamamlandı" 
