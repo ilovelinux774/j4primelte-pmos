@@ -10,7 +10,8 @@
 #   Bu workflow:
 #     1) Upstream pmaports'u klonlar (--branch main, --no-single-branch)
 #     2) pmaports-j4primelte fork'undan j4primelte paketlerini overlay eder
-#     3) pmbootstrap init ile work klasörünü KENDISI oluşturur
+#     3) APKBUILD'deki mesa-dri-swrast → mesa-swrast patch'ini uygular
+#     4) pmbootstrap init ile work klasörünü KENDISI oluşturur
 #
 #   Fork: https://github.com/postmarketos-j4primelte/pmaports-j4primelte
 #
@@ -25,18 +26,12 @@
 #      keymap boşsa config'e hiç yazma.
 #
 #   3) "channel" pmbootstrap v3'te geçerli bir config key'i DEĞİLDİR.
-#      Geçerli key'ler: aports, build_default_device_arch,
-#      build_pkgs_on_install, ccache_size, device, extra_packages,
-#      extra_space, hostname, is_default_channel, jobs, kernel,
-#      keymap, locale, mirrors.*, providers, service_manager,
-#      ssh_key_glob, ssh_keys, sudo_timer, timezone, ui, ui_extras,
-#      user, work
 #      Channel, pmaports'un hangi branch'inin klonlandığıyla belirlenir:
 #        edge   → pmaports "main" branch
 #        v24.12 → pmaports "v24.12" branch
 #
-#   4) "nonfree_firmware" ve "nonfree_userland" da geçersiz key'lerdir.
-#      Bu ayarlar pmbootstrap v3'te kaldırılmış.
+#   4) "nonfree_firmware" ve "nonfree_userland" geçersiz key'lerdir.
+#      pmbootstrap v3'te kaldırıldı.
 #
 #   5) pmaports ana branch'i "main"dir, "master" değil.
 #      pmbootstrap v3.11.1: git show origin/main:channels.cfg
@@ -45,6 +40,9 @@
 #
 #   7) "yes | pmbootstrap init" set -euo pipefail ile uyumsuz.
 #      SIGPIPE (exit 141) → pipeline fail. Çözüm: PIPESTATUS[1].
+#
+#   8) Alpine edge'de mesa-dri-swrast paketi mesa-swrast olarak
+#      yeniden adlandırıldı. APKBUILD'de patch gerekli.
 #
 # ── GITHUB SECRETS ─────────────────────────────────────────────────
 #
@@ -233,8 +231,6 @@ jobs:
       #   Channel → pmaports branch eşleştirmesi:
       #     edge   → main branch
       #     v24.12 → v24.12 branch
-      #
-      #   Channel config key'i değil, git branch'idir!
       # ────────────────────────────────────────────────────────────
       - name: Clone pmaports + overlay j4primelte packages
         shell: bash
@@ -245,11 +241,10 @@ jobs:
           if [ "$CHANNEL" = "edge" ]; then
             PMAPORTS_BRANCH="main"
           else
-            # v24.12 gibi release channel'lar için branch adı aynı
             PMAPORTS_BRANCH="$CHANNEL"
           fi
 
-          echo "▶ Channel     : $CHANNEL"
+          echo "▶ Channel        : $CHANNEL"
           echo "▶ pmaports branch: $PMAPORTS_BRANCH"
 
           # ── a) Upstream pmaports'u klonla ─────────────────────
@@ -322,7 +317,52 @@ jobs:
           rm -rf /tmp/pmaports-j4primelte
 
       # ────────────────────────────────────────────────────────────
-      # ADIM 8 — pmbootstrap config dosyasını yaz
+      # ADIM 8 — APKBUILD mesa paket adı düzeltmesi
+      #
+      #   Alpine edge'de "mesa-dri-swrast" paketi "mesa-swrast"
+      #   olarak yeniden adlandırıldı.
+      #   Fork'taki APKBUILD eski adı kullandığı için build
+      #   "dependency not found: mesa-dri-swrast" hatasıyla ölüyor.
+      #
+      #   Aynı zamanda diğer eski mesa paket adlarını da kontrol edip
+      #   patch'liyoruz (gelecekteki olası sorunlar için).
+      # ────────────────────────────────────────────────────────────
+      - name: Patch APKBUILD mesa package names
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEVICE_APKBUILD="$PMB_APORTS/device/testing/device-samsung-j4primelte/APKBUILD"
+
+          if [ ! -f "$DEVICE_APKBUILD" ]; then
+            echo "::error::APKBUILD bulunamadı: $DEVICE_APKBUILD"
+            exit 1
+          fi
+
+          echo "▶ Patch öncesi depends:"
+          grep "depends" "$DEVICE_APKBUILD" || true
+          echo ""
+
+          # mesa-dri-swrast → mesa-swrast
+          if grep -q "mesa-dri-swrast" "$DEVICE_APKBUILD"; then
+            sed -i 's/mesa-dri-swrast/mesa-swrast/g' "$DEVICE_APKBUILD"
+            echo "✅ mesa-dri-swrast → mesa-swrast patch uygulandı"
+          else
+            echo "ℹ️  mesa-dri-swrast bulunamadı, patch gerekmedi"
+          fi
+
+          # mesa-dri-gallium → mesa-gallium (olası gelecek sorun)
+          if grep -q "mesa-dri-gallium" "$DEVICE_APKBUILD"; then
+            sed -i 's/mesa-dri-gallium/mesa-gallium/g' "$DEVICE_APKBUILD"
+            echo "✅ mesa-dri-gallium → mesa-gallium patch uygulandı"
+          fi
+
+          echo ""
+          echo "▶ Patch sonrası depends:"
+          grep "depends" "$DEVICE_APKBUILD" || true
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 9 — pmbootstrap config dosyasını yaz
       #
       #   Geçerli config key'leri (pmbootstrap v3.11.1):
       #     aports, build_default_device_arch, build_pkgs_on_install,
@@ -332,7 +372,7 @@ jobs:
       #     ssh_key_glob, ssh_keys, sudo_timer, timezone,
       #     ui, ui_extras, user, work
       #
-      #   KALDIRILDI (artık geçersiz):
+      #   GEÇERSİZ (kaldırıldı):
       #     channel          → git branch ile belirlenir
       #     nonfree_firmware → pmbootstrap v3'te kaldırıldı
       #     nonfree_userland → pmbootstrap v3'te kaldırıldı
@@ -375,7 +415,7 @@ jobs:
           work = ${PMB_WORK}
           EOF
 
-          # keymap sadece geçerli bir değer varsa ekle
+          # keymap sadece geçerli değer varsa ekle
           # Boş string validation regex'ini geçemez
           if [ -n "$KEYMAP" ] && [ "$KEYMAP" != "none" ]; then
             echo "keymap = ${KEYMAP}" >> "$CFG"
@@ -389,7 +429,7 @@ jobs:
           echo "✅ Config yazıldı"
 
       # ────────────────────────────────────────────────────────────
-      # ADIM 9 — pmbootstrap init (work dizinini oluşturur)
+      # ADIM 10 — pmbootstrap init (work dizinini oluşturur)
       #
       #   SIGPIPE sorunu:
       #     "yes | pmbootstrap init" → "yes" SIGPIPE (exit 141) alır
@@ -454,7 +494,7 @@ jobs:
           pmbootstrap config
 
       # ────────────────────────────────────────────────────────────
-      # ADIM 10 — APKBUILD'lerin varlığını doğrula
+      # ADIM 11 — APKBUILD'lerin varlığını doğrula
       # ────────────────────────────────────────────────────────────
       - name: Verify required APKBUILDs
         shell: bash
@@ -501,7 +541,16 @@ jobs:
           fi
 
       # ────────────────────────────────────────────────────────────
-      # ADIM 11 — Sistem imajını oluştur
+      # ADIM 12 — Sistem imajını oluştur
+      #
+      #   pmbootstrap install:
+      #     - kernel, device, firmware paketlerini otomatik derler
+      #     - --no-fde: FDE şifresini sorma
+      #     - --password flag'i YOK → printf ile stdin'e pipe yapıyoruz
+      #
+      #   Şifre kaynağı (öncelik sırası):
+      #     1. GitHub Secret: PMOS_PASSWORD
+      #     2. Varsayılan   : "147147"
       # ────────────────────────────────────────────────────────────
       - name: Build system image
         shell: bash
@@ -525,7 +574,7 @@ jobs:
           echo "✅ Build tamamlandı"
 
       # ────────────────────────────────────────────────────────────
-      # ADIM 12 — İmajı dışa aktar
+      # ADIM 13 — İmajı dışa aktar
       # ────────────────────────────────────────────────────────────
       - name: Export image
         shell: bash
@@ -541,7 +590,10 @@ jobs:
           ls -lah "$EXPORT_DIR"/
 
       # ────────────────────────────────────────────────────────────
-      # ADIM 13 — Odin paketi oluştur (Samsung heimdall için)
+      # ADIM 14 — Odin paketi oluştur (Samsung heimdall için)
+      #
+      #   deviceinfo'da flasher method heimdall-bootimg veya
+      #   heimdall-isorec tanımlıysa çalışır. Aksi halde uyarı verir.
       # ────────────────────────────────────────────────────────────
       - name: Export Odin package
         shell: bash
@@ -552,7 +604,8 @@ jobs:
             || echo "⚠️  Odin export başarısız (heimdall desteklemiyor olabilir)"
 
       # ────────────────────────────────────────────────────────────
-      # ADIM 14 — Dosyaları sıkıştır
+      # ADIM 15 — Dosyaları sıkıştır
+      #   xz -3 -T0: İyi oran/hız dengesi + tüm çekirdekler
       # ────────────────────────────────────────────────────────────
       - name: Compress output files
         shell: bash
@@ -573,7 +626,8 @@ jobs:
           ls -lah "$EXPORT_DIR"/
 
       # ────────────────────────────────────────────────────────────
-      # ADIM 15 — Build meta verisi
+      # ADIM 16 — Build meta verisi
+      #   always() → build başarısız olsa bile çalışır
       # ────────────────────────────────────────────────────────────
       - name: Write build metadata
         if: always()
@@ -598,7 +652,8 @@ jobs:
           cat "$EXPORT_DIR/BUILD_INFO.txt"
 
       # ────────────────────────────────────────────────────────────
-      # ADIM 16 — Artifact yükle
+      # ADIM 17 — Artifact yükle
+      #   if: always() → build başarısız olsa bile kısmi çıktılar yüklenir
       # ────────────────────────────────────────────────────────────
       - name: Upload artifacts
         if: always()
@@ -610,7 +665,9 @@ jobs:
           if-no-files-found: warn
 
       # ────────────────────────────────────────────────────────────
-      # ADIM 17 — GitHub Release
+      # ADIM 18 — GitHub Release
+      #   Sadece "v*.*.*" tag push'larında çalışır.
+      #   Örnek: git tag v1.0.0 && git push origin v1.0.0
       # ────────────────────────────────────────────────────────────
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -638,7 +695,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # ────────────────────────────────────────────────────────────
-      # ADIM 18 — Temizlik
+      # ADIM 19 — Temizlik
       # ────────────────────────────────────────────────────────────
       - name: Cleanup
         if: always()
@@ -646,4 +703,4 @@ jobs:
         run: |
           pmbootstrap -y zap                   2>/dev/null || true
           sudo rm -rf "${PMB_WORK}/chroot_"*   2>/dev/null || true
-          echo "🧹 Temizlik tamamlandı" 
+          echo "🧹 Temizlik tamamlandı"
