@@ -42,7 +42,7 @@ env:
   DEVICE:         "samsung-j4primelte"
   UI:             ${{ github.event.inputs.ui             || 'weston' }}
   CHANNEL:        ${{ github.event.inputs.channel        || 'edge'   }}
-  EXTRA_PACKAGES: ${{ github.event.inputs.extra_parameters || 'none'   }}
+  EXTRA_PACKAGES: ${{ github.event.inputs.extra_packages || 'none'   }}
   PMB_WORK:       "/home/runner/.local/var/pmbootstrap"
   PMB_APORTS:     "/home/runner/pmaports"
   EXPORT_DIR:     "/tmp/postmarketOS-export"
@@ -138,7 +138,7 @@ jobs:
 
           rm -rf /tmp/pmaports-j4primelte
 
-      - name: Patch APKBUILD mesa
+      - name: Patch device APKBUILD mesa
         shell: bash
         run: |
           set -euo pipefail
@@ -146,6 +146,80 @@ jobs:
           sed -i 's/mesa-dri-swrast/mesa/g' "$APKBUILD"
           sed -i 's/mesa-swrast/mesa/g' "$APKBUILD"
           grep "depends" "$APKBUILD" || true
+
+      - name: Patch deviceinfo (qcdt + heimdall partitions)
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEVICEINFO="$PMB_APORTS/device/testing/device-samsung-j4primelte/deviceinfo"
+
+          # Fix 1: qcdt false → true (asıl boot fix)
+          sed -i 's/deviceinfo_bootimg_qcdt="false"/deviceinfo_bootimg_qcdt="true"/' "$DEVICEINFO"
+
+          # Fix 2: heimdall partition adlarını sabitle (OrangeFox koruması)
+          # Eğer zaten varsa değiştir, yoksa ekle
+          if grep -q "deviceinfo_flash_heimdall_partition_kernel" "$DEVICEINFO"; then
+            sed -i 's/deviceinfo_flash_heimdall_partition_kernel=.*/deviceinfo_flash_heimdall_partition_kernel="KERNEL"/' "$DEVICEINFO"
+          else
+            echo 'deviceinfo_flash_heimdall_partition_kernel="KERNEL"' >> "$DEVICEINFO"
+          fi
+
+          if grep -q "deviceinfo_flash_heimdall_partition_rootfs" "$DEVICEINFO"; then
+            sed -i 's/deviceinfo_flash_heimdall_partition_rootfs=.*/deviceinfo_flash_heimdall_partition_rootfs="SYSTEM"/' "$DEVICEINFO"
+          else
+            echo 'deviceinfo_flash_heimdall_partition_rootfs="SYSTEM"' >> "$DEVICEINFO"
+          fi
+
+          echo "▶ Güncel deviceinfo (ilgili satırlar):"
+          grep -E "qcdt|heimdall|flash" "$DEVICEINFO" || true
+
+      - name: Patch linux APKBUILD (dtbTool + dt.img)
+        shell: bash
+        run: |
+          set -euo pipefail
+          LINUX_APKBUILD="$PMB_APORTS/device/testing/linux-samsung-j4primelte/APKBUILD"
+
+          # Fix 1: makedepends'e dtbtool ekle
+          if ! grep -q "dtbtool" "$LINUX_APKBUILD"; then
+            sed -i '/^makedepends=/s/"$/ dtbtool"/' "$LINUX_APKBUILD"
+            echo "✅ dtbtool makedepends'e eklendi"
+          else
+            echo "ℹ️  dtbtool zaten var"
+          fi
+
+          # Fix 2: build() içine dtbTool komutu ekle (make satırından sonra)
+          if ! grep -q "dtbTool" "$LINUX_APKBUILD"; then
+            sed -i '/^\s*make \$\{makeopts\}/a\\t# QCDT: Qualcomm Concatenated Device Tree\n\tdtbTool -s 2048 -o arch/arm64/boot/dt.img arch/arm64/boot/dts/qcom/' "$LINUX_APKBUILD"
+            echo "✅ dtbTool build() adımı eklendi"
+          else
+            echo "ℹ️  dtbTool zaten var"
+          fi
+
+          # Fix 3: package() içine dt.img install ekle
+          if ! grep -q "dt.img" "$LINUX_APKBUILD"; then
+            sed -i '/install.*Image.*\/boot/a\\tinstall -Dm644 arch/arm64/boot/dt.img "$pkgdir"/boot/dt.img' "$LINUX_APKBUILD"
+            echo "✅ dt.img package() adımı eklendi"
+          else
+            echo "ℹ️  dt.img zaten var"
+          fi
+
+          echo "▶ Güncel APKBUILD (ilgili satırlar):"
+          grep -E "dtbtool|dtbTool|dt.img|makedepends" "$LINUX_APKBUILD" || true
+
+      - name: Regenerate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # device APKBUILD checksum
+          cd "$PMB_APORTS/device/testing/device-samsung-j4primelte"
+          pmbootstrap checksum device-samsung-j4primelte
+          echo "✅ device checksum güncellendi"
+
+          # linux APKBUILD checksum
+          cd "$PMB_APORTS/device/testing/linux-samsung-j4primelte"
+          pmbootstrap checksum linux-samsung-j4primelte
+          echo "✅ linux checksum güncellendi"
 
       - name: Write config
         shell: bash
@@ -230,13 +304,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           tar \
             --dereference \
             -cJf /tmp/pmos-${{ env.DEVICE }}-${{ env.UI }}.tar.xz \
             -C "$EXPORT_DIR" \
             .
-
           echo "▶ Sonuç:"
           ls -lah /tmp/pmos-${{ env.DEVICE }}-${{ env.UI }}.tar.xz
 
