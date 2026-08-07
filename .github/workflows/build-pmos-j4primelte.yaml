@@ -153,11 +153,8 @@ jobs:
           set -euo pipefail
           DEVICEINFO="$PMB_APORTS/device/testing/device-samsung-j4primelte/deviceinfo"
 
-          # Fix 1: qcdt false → true (asıl boot fix)
           sed -i 's/deviceinfo_bootimg_qcdt="false"/deviceinfo_bootimg_qcdt="true"/' "$DEVICEINFO"
 
-          # Fix 2: heimdall partition adlarını sabitle (OrangeFox koruması)
-          # Eğer zaten varsa değiştir, yoksa ekle
           if grep -q "deviceinfo_flash_heimdall_partition_kernel" "$DEVICEINFO"; then
             sed -i 's/deviceinfo_flash_heimdall_partition_kernel=.*/deviceinfo_flash_heimdall_partition_kernel="KERNEL"/' "$DEVICEINFO"
           else
@@ -187,36 +184,60 @@ jobs:
             echo "ℹ️  dtbtool zaten var"
           fi
 
-          # Fix 2: build() içine dtbTool komutu ekle (make satırından sonra)
-          if ! grep -q "dtbTool" "$LINUX_APKBUILD"; then
-            sed -i '/^\s*make \$\{makeopts\}/a\\t# QCDT: Qualcomm Concatenated Device Tree\n\tdtbTool -s 2048 -o arch/arm64/boot/dt.img arch/arm64/boot/dts/qcom/' "$LINUX_APKBUILD"
-            echo "✅ dtbTool build() adımı eklendi"
-          else
-            echo "ℹ️  dtbTool zaten var"
-          fi
+          # Fix 2 + 3: Python ile build() ve package() patch'le
+          # sed yerine Python kullanıyoruz — ${makeopts} gibi shell değişkenleri
+          # sed regex'ini bozuyor
+          python3 << 'PYEOF'
+          import re
+
+          path = "$LINUX_APKBUILD"
+
+          with open(path, 'r') as f:
+              content = f.read()
+
+          # Fix 2: build() içine dtbTool ekle (make satırından sonra)
+          if 'dtbTool' not in content:
+              dtbtool_cmd = '\n\t# QCDT: Qualcomm Concatenated Device Tree\n\tdtbTool -s 2048 -o arch/arm64/boot/dt.img arch/arm64/boot/dts/qcom/'
+              # make ile başlayan satırı bul, ardına ekle
+              content = re.sub(
+                  r'(\tmake\s+\$\{makeopts\}[^\n]*)',
+                  r'\1' + dtbtool_cmd,
+                  content,
+                  count=1
+              )
+              print("✅ dtbTool build() adımı eklendi")
+          else:
+              print("ℹ️  dtbTool zaten var")
 
           # Fix 3: package() içine dt.img install ekle
-          if ! grep -q "dt.img" "$LINUX_APKBUILD"; then
-            sed -i '/install.*Image.*\/boot/a\\tinstall -Dm644 arch/arm64/boot/dt.img "$pkgdir"/boot/dt.img' "$LINUX_APKBUILD"
-            echo "✅ dt.img package() adımı eklendi"
-          else
-            echo "ℹ️  dt.img zaten var"
-          fi
+          if 'dt.img' not in content:
+              dtimg_install = '\n\tinstall -Dm644 arch/arm64/boot/dt.img "$pkgdir"/boot/dt.img'
+              # Image install satırını bul, ardına ekle
+              content = re.sub(
+                  r'(\tinstall[^\n]*Image[^\n]*)',
+                  r'\1' + dtimg_install,
+                  content,
+                  count=1
+              )
+              print("✅ dt.img package() adımı eklendi")
+          else:
+              print("ℹ️  dt.img zaten var")
+
+          with open(path, 'w') as f:
+              f.write(content)
+          PYEOF
 
           echo "▶ Güncel APKBUILD (ilgili satırlar):"
-          grep -E "dtbtool|dtbTool|dt.img|makedepends" "$LINUX_APKBUILD" || true
+          grep -E "dtbtool|dtbTool|dt\.img|makedepends" "$LINUX_APKBUILD" || true
 
       - name: Regenerate checksums
         shell: bash
         run: |
           set -euo pipefail
-
-          # device APKBUILD checksum
           cd "$PMB_APORTS/device/testing/device-samsung-j4primelte"
           pmbootstrap checksum device-samsung-j4primelte
           echo "✅ device checksum güncellendi"
 
-          # linux APKBUILD checksum
           cd "$PMB_APORTS/device/testing/linux-samsung-j4primelte"
           pmbootstrap checksum linux-samsung-j4primelte
           echo "✅ linux checksum güncellendi"
