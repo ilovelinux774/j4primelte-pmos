@@ -1,0 +1,632 @@
+# .github/workflows/build-pmos-j4primelte.yml
+#
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  postmarketOS Image Builder — Samsung Galaxy J4+ (j4primelte)  ║
+# ╚══════════════════════════════════════════════════════════════════╝
+#
+# ── DURUM ──────────────────────────────────────────────────────────
+#
+#   samsung-j4primelte upstream pmaports'a merge edilmemiştir.
+#   Bu workflow:
+#     1) Upstream pmaports'u klonlar (--branch main, --no-single-branch)
+#     2) pmaports-j4primelte fork'undan j4primelte paketlerini overlay eder
+#     3) pmbootstrap init ile work klasörünü KENDISI oluşturur
+#
+#   Fork: https://github.com/postmarketos-j4primelte/pmaports-j4primelte
+#
+# ── KRİTİK NOTLAR ──────────────────────────────────────────────────
+#
+#   1) PMB_WORK dizini ASLA manuel oluşturulmamalı.
+#      Boş/sürümsüz dizin → pmbootstrap "version  → 8" migrate
+#      hatasına düşer → exit 2.
+#
+#   2) Config'de boş string olmamalı.
+#      pmbootstrap init validation regex: ^([-.+\w]+)(,[-.+\w]+)*$
+#      Bu regex boş string'i reddeder.
+#      extra_packages → boşsa "none" kullan.
+#      keymap         → boşsa config'e yazma.
+#
+#   3) pmaports ana branch'i "main"dir, "master" değil.
+#      pmbootstrap v3.11.1: git show origin/main:channels.cfg
+#
+#   4) --no-single-branch zorunlu: origin/main tracking ref'i için.
+#
+#   5) "yes | pmbootstrap init" set -euo pipefail ile uyumsuz.
+#      SIGPIPE (exit 141) → pipeline fail. Çözüm: PIPESTATUS[1].
+#
+# ── GITHUB SECRETS ─────────────────────────────────────────────────
+#
+#   PMOS_PASSWORD  →  Kullanıcı şifresi (tanımlanmazsa "147147")
+#                     Settings → Secrets → Actions → New secret
+
+name: Build postmarketOS – j4primelte
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ui:
+        description: "Kullanıcı arayüzü"
+        required: false
+        default: "phosh"
+        type: choice
+        options:
+          - phosh
+          - plasma-mobile
+          - sxmo
+          - fbkeyboard
+          - console
+      channel:
+        description: "postmarketOS channel"
+        required: false
+        default: "edge"
+        type: choice
+        options:
+          - edge
+          - v24.12
+      extra_packages:
+        description: "Ek paketler (virgülle ayrılmış, opsiyonel)"
+        required: false
+        default: "none"
+        type: string
+      keymap:
+        description: "Keymap (opsiyonel, örn: us, tr)"
+        required: false
+        default: "none"
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEVICE:         "samsung-j4primelte"
+  UI:             ${{ github.event.inputs.ui             || 'phosh' }}
+  CHANNEL:        ${{ github.event.inputs.channel        || 'edge'  }}
+  # Boş string yerine "none" kullan — pmbootstrap validation regex boş string'i reddeder
+  EXTRA_PACKAGES: ${{ github.event.inputs.extra_packages || 'none'  }}
+  KEYMAP:         ${{ github.event.inputs.keymap         || 'none'  }}
+  PMB_WORK:       "/home/runner/.local/var/pmbootstrap"
+  PMB_APORTS:     "/home/runner/pmaports"
+  EXPORT_DIR:     "/tmp/postmarketOS-export"
+  PMB_SUDO:       "sudo"
+  J4_FORK_URL:    "https://github.com/postmarketos-j4primelte/pmaports-j4primelte.git"
+  UPSTREAM_URL:   "https://gitlab.postmarketos.org/postmarketOS/pmaports.git"
+
+jobs:
+  build:
+    name: "[${{ github.event.inputs.ui || 'phosh' }}] postmarketOS – j4primelte"
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 1 — Kaynak kodu al
+      # ────────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 2 — Disk alanı aç (~10-12 GB kazanç)
+      # ────────────────────────────────────────────────────────────
+      - name: Free up disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "▶ Disk (önce):"
+          df -h /
+
+          sudo rm -rf \
+            /usr/share/dotnet          \
+            /usr/local/lib/android     \
+            /opt/ghc                   \
+            /usr/local/share/boost     \
+            /usr/share/swift           \
+            /opt/hostedtoolcache       \
+            2>/dev/null || true
+
+          sudo apt-get autopurge -y \
+            "dotnet-*"               \
+            "aspnetcore-*"           \
+            "mono-*"                 \
+            google-chrome-stable     \
+            microsoft-edge-stable    \
+            firefox                  \
+            2>/dev/null || true
+
+          sudo apt-get clean
+          sudo docker image prune --all --force 2>/dev/null || true
+
+          echo "▶ Disk (sonra):"
+          df -h /
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 3 — Sistem bağımlılıklarını kur
+      # ────────────────────────────────────────────────────────────
+      - name: Install system dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            git                \
+            python3            \
+            python3-pip        \
+            openssl            \
+            coreutils          \
+            procps             \
+            sudo               \
+            qemu-user-static   \
+            binfmt-support     \
+            ccache             \
+            xz-utils           \
+            kpartx
+
+          sudo systemctl restart binfmt-support || true
+
+          echo "▶ Aktif binfmt kayıtları:"
+          ls /proc/sys/fs/binfmt_misc/ || true
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 4 — pmbootstrap'ı git'ten kur
+      # ────────────────────────────────────────────────────────────
+      - name: Install pmbootstrap from git
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --depth=1 \
+            https://gitlab.postmarketos.org/postmarketOS/pmbootstrap.git \
+            /tmp/pmbootstrap-src
+
+          pip install --break-system-packages /tmp/pmbootstrap-src \
+            || pip install /tmp/pmbootstrap-src
+
+          echo "▶ pmbootstrap sürümü: $(pmbootstrap --version)"
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 5 — HTTP paket cache'i
+      # ────────────────────────────────────────────────────────────
+      - name: Cache pmbootstrap HTTP packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PMB_WORK }}/cache_http
+          key: pmb-http-${{ env.DEVICE }}-${{ env.CHANNEL }}-${{ hashFiles('aports/**') }}
+          restore-keys: |
+            pmb-http-${{ env.DEVICE }}-${{ env.CHANNEL }}-
+            pmb-http-${{ env.DEVICE }}-
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 6 — ccache
+      # ────────────────────────────────────────────────────────────
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.PMB_WORK }}/cache_ccache_armv7
+            ${{ env.PMB_WORK }}/cache_ccache_x86_64
+          key: ccache-${{ env.DEVICE }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ env.DEVICE }}-
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 7 — pmaports klonlama + j4primelte overlay
+      # ────────────────────────────────────────────────────────────
+      - name: Clone pmaports + overlay j4primelte packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # ── a) Upstream pmaports'u klonla ─────────────────────
+          echo "▶ Upstream pmaports klonlanıyor..."
+          git clone \
+            --depth=1 \
+            --no-single-branch \
+            --branch main \
+            "$UPSTREAM_URL" \
+            "$PMB_APORTS"
+
+          echo "▶ Branch : $(git -C "$PMB_APORTS" rev-parse --abbrev-ref HEAD)"
+          echo "▶ Commit : $(git -C "$PMB_APORTS" rev-parse --short HEAD)"
+
+          echo "▶ Remote tracking refs:"
+          git -C "$PMB_APORTS" branch -r
+
+          # pmbootstrap'ın çalıştıracağı komutu önceden test et
+          echo "▶ channels.cfg erişim testi (origin/main):"
+          git -C "$PMB_APORTS" show origin/main:channels.cfg | head -5
+          echo "✅ channels.cfg okunabilir"
+
+          # ── b) j4primelte fork'unu geçici dizine klonla ───────
+          echo ""
+          echo "▶ j4primelte fork'u klonlanıyor (geçici)..."
+          git clone --depth=1 \
+            "$J4_FORK_URL" \
+            /tmp/pmaports-j4primelte
+
+          echo "▶ Fork branch : $(git -C /tmp/pmaports-j4primelte rev-parse --abbrev-ref HEAD)"
+          echo "▶ Fork commit : $(git -C /tmp/pmaports-j4primelte rev-parse --short HEAD)"
+
+          # ── c) j4primelte paketlerini upstream üzerine kopyala ─
+          echo ""
+          echo "▶ Fork'taki j4primelte paketleri aranıyor..."
+
+          J4_PKGS=$(find /tmp/pmaports-j4primelte \
+            \( -name "device-samsung-j4primelte"   \
+            -o -name "linux-samsung-j4primelte"    \
+            -o -name "firmware-samsung-j4primelte" \) \
+            -type d 2>/dev/null || true)
+
+          if [ -z "$J4_PKGS" ]; then
+            echo "::error::Fork'ta j4primelte paketleri bulunamadı!"
+            echo "::error::Fork URL: $J4_FORK_URL"
+            echo ""
+            echo "▶ Fork içeriği (tüm APKBUILD'ler):"
+            find /tmp/pmaports-j4primelte -name "APKBUILD" | head -20 || true
+            exit 1
+          fi
+
+          echo "▶ Bulunan paketler:"
+          echo "$J4_PKGS"
+
+          for PKG_DIR in $J4_PKGS; do
+            PKG_NAME=$(basename "$PKG_DIR")
+            DST="$PMB_APORTS/device/testing/$PKG_NAME"
+            echo "  Kopyalanıyor: $PKG_DIR → $DST"
+            cp -r "$PKG_DIR" "$DST"
+          done
+
+          echo ""
+          echo "✅ Overlay tamamlandı"
+          echo "▶ Kopyalanan j4primelte paketleri:"
+          ls -la "$PMB_APORTS/device/testing/" | grep j4primelte || true
+
+          rm -rf /tmp/pmaports-j4primelte
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 8 — pmbootstrap config dosyasını yaz
+      #
+      #   KRİTİK — Boş string kuralları:
+      #
+      #   pmbootstrap init validation regex: ^([-.+\w]+)(,[-.+\w]+)*$
+      #   Bu regex boş string'i REDDEDER.
+      #
+      #   extra_packages:
+      #     - Boşsa "none" kullan (pmbootstrap'ın kabul ettiği özel değer)
+      #     - Config'e boş string yazma
+      #
+      #   keymap:
+      #     - Boşsa config'e yazma (satırı hiç ekleme)
+      #     - pmbootstrap keymap için boş string kabul etmez
+      #
+      #   KRİTİK — mkdir -p "$PMB_WORK" YAPILMIYOR:
+      #     Boş/sürümsüz work dizini → "version  → 8" migrate hatası.
+      #     Work dizinini pmbootstrap init kendisi oluşturmalı.
+      # ────────────────────────────────────────────────────────────
+      - name: Write pmbootstrap config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Sadece config dizinini oluştur — PMB_WORK'e DOKUNMA!
+          mkdir -p "$HOME/.config"
+
+          # extra_packages boş gelirse "none" kullan
+          EXTRA_PACKAGES_CFG="${EXTRA_PACKAGES:-none}"
+          if [ -z "$EXTRA_PACKAGES_CFG" ]; then
+            EXTRA_PACKAGES_CFG="none"
+          fi
+
+          # keymap boş veya "none" gelirse config'e yazma
+          KEYMAP_CFG="${KEYMAP:-}"
+
+          CFG="$HOME/.config/pmbootstrap_v3.cfg"
+
+          # Base config — keymap hariç
+          cat > "$CFG" <<EOF
+          [pmbootstrap]
+          aports = ${PMB_APORTS}
+          build_default_device_arch = True
+          ccache_size = 5G
+          device = ${DEVICE}
+          extra_packages = ${EXTRA_PACKAGES_CFG}
+          hostname = j4primelte
+          jobs = $(nproc)
+          kernel = downstream
+          locale = en_US.UTF-8
+          nonfree_firmware = True
+          nonfree_userland = False
+          ssh_keys = False
+          ssh_key_glob = ~/.ssh/id_*.pub
+          timezone = Europe/Istanbul
+          ui = ${UI}
+          user = pmos
+          work = ${PMB_WORK}
+          channel = ${CHANNEL}
+          EOF
+
+          # keymap sadece geçerli bir değer varsa ekle
+          if [ -n "$KEYMAP_CFG" ] && [ "$KEYMAP_CFG" != "none" ]; then
+            echo "keymap = ${KEYMAP_CFG}" >> "$CFG"
+            echo "ℹ️  Keymap eklendi: $KEYMAP_CFG"
+          else
+            echo "ℹ️  Keymap atlandı (boş/none — validation hatasını önler)"
+          fi
+
+          echo "▶ Config dosyası ($CFG):"
+          cat "$CFG"
+          echo "✅ Config yazıldı"
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 9 — pmbootstrap init (work dizinini oluşturur)
+      #
+      #   SIGPIPE sorunu ve çözümü:
+      #     "yes | pmbootstrap init" pipeline'ında "yes" komutu,
+      #     pmbootstrap çıktıktan sonra SIGPIPE (exit 141) alır.
+      #     set -euo pipefail bunu gerçek hata sayar.
+      #     Çözüm: pipefail geçici kapat + PIPESTATUS[1] kontrol et.
+      #
+      #   Config önceden yazıldığı için init:
+      #     - Soruları config'den gelen varsayılanlarla gösterir
+      #     - Work dizinini doğru sürüm metadata'sıyla oluşturur
+      # ────────────────────────────────────────────────────────────
+      - name: Initialize pmbootstrap work directory
+        shell: bash
+        run: |
+          # pipefail geçici kapat — "yes" SIGPIPE alacak, bu normal
+          set +o pipefail
+
+          echo "▶ pmbootstrap init çalıştırılıyor..."
+
+          yes "" | pmbootstrap -y init
+          PMB_EXIT="${PIPESTATUS[1]}"
+
+          set -euo pipefail
+
+          echo "▶ pmbootstrap init exit code: $PMB_EXIT"
+
+          # 0   = başarı
+          # 141 = SIGPIPE (yes'in broken pipe'ı) — normal
+          if [ "$PMB_EXIT" -ne 0 ] && [ "$PMB_EXIT" -ne 141 ]; then
+            echo "::error::pmbootstrap init başarısız! Exit code: $PMB_EXIT"
+            exit "$PMB_EXIT"
+          fi
+
+          echo "✅ pmbootstrap init tamamlandı"
+
+          # Work dizininin oluştuğunu doğrula
+          if [ ! -d "$PMB_WORK" ]; then
+            echo "::error::PMB_WORK dizini oluşturulmadı: $PMB_WORK"
+            exit 1
+          fi
+
+          echo "▶ Work dizini içeriği:"
+          ls -la "$PMB_WORK/" || true
+
+          # ── Kritik config değerlerini init sonrası override et ─
+          # init bazı değerleri sıfırlayabilir
+          pmbootstrap config device  "$DEVICE"
+          pmbootstrap config ui      "$UI"
+          pmbootstrap config channel "$CHANNEL"
+          pmbootstrap config kernel  "downstream"
+          pmbootstrap config build_default_device_arch "True"
+          pmbootstrap config nonfree_firmware "True"
+
+          # extra_packages: boşsa "none" kullan
+          EXTRA_CFG="${EXTRA_PACKAGES:-none}"
+          [ -z "$EXTRA_CFG" ] && EXTRA_CFG="none"
+          pmbootstrap config extra_packages "$EXTRA_CFG"
+
+          # Cihazın doğru ayarlandığını doğrula
+          CONFIGURED_DEVICE="$(pmbootstrap config device)"
+          if [ "$CONFIGURED_DEVICE" != "$DEVICE" ]; then
+            echo "::error::Cihaz yanlış: beklenen=$DEVICE mevcut=$CONFIGURED_DEVICE"
+            exit 1
+          fi
+
+          echo "✅ Cihaz doğrulandı: $CONFIGURED_DEVICE"
+          echo ""
+          echo "▶ Güncel pmbootstrap config:"
+          pmbootstrap config
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 10 — APKBUILD'lerin varlığını doğrula
+      # ────────────────────────────────────────────────────────────
+      - name: Verify required APKBUILDs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "▶ APKBUILD'ler kontrol ediliyor..."
+
+          DEVICE_PKG=$(find "$PMB_APORTS" \
+            -path "*/device-${DEVICE}/APKBUILD" \
+            -print -quit 2>/dev/null || true)
+
+          KERNEL_PKG=$(find "$PMB_APORTS" \
+            -path "*/linux-${DEVICE}/APKBUILD" \
+            -print -quit 2>/dev/null || true)
+
+          if [ -z "$DEVICE_PKG" ]; then
+            echo "::error::device-${DEVICE}/APKBUILD bulunamadı!"
+            echo ""
+            echo "▶ Mevcut device/testing/ içeriği:"
+            ls "$PMB_APORTS/device/testing/" | grep samsung || true
+            exit 1
+          fi
+
+          if [ -z "$KERNEL_PKG" ]; then
+            echo "::error::linux-${DEVICE}/APKBUILD bulunamadı!"
+            echo ""
+            echo "▶ Mevcut device/testing/ içeriği:"
+            ls "$PMB_APORTS/device/testing/" | grep samsung || true
+            exit 1
+          fi
+
+          echo "✅ device  APKBUILD : $DEVICE_PKG"
+          echo "✅ kernel  APKBUILD : $KERNEL_PKG"
+
+          FIRMWARE_PKG=$(find "$PMB_APORTS" \
+            -path "*/firmware-${DEVICE}/APKBUILD" \
+            -print -quit 2>/dev/null || true)
+
+          if [ -n "$FIRMWARE_PKG" ]; then
+            echo "✅ firmware APKBUILD: $FIRMWARE_PKG"
+          else
+            echo "ℹ️  firmware-${DEVICE} paketi yok (opsiyonel)"
+          fi
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 11 — Sistem imajını oluştur
+      # ────────────────────────────────────────────────────────────
+      - name: Build system image
+        shell: bash
+        env:
+          PMOS_PASSWORD: ${{ secrets.PMOS_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          PASSWORD="${PMOS_PASSWORD:-147147}"
+
+          echo "▶ Build başlıyor..."
+          echo "   Cihaz   : $DEVICE"
+          echo "   UI      : $UI"
+          echo "   Channel : $CHANNEL"
+          echo "   Jobs    : $(nproc)"
+
+          # pmbootstrap install iki kez şifre sorar (user + confirm)
+          printf '%s\n%s\n' "$PASSWORD" "$PASSWORD" \
+            | pmbootstrap install --no-fde
+
+          echo "✅ Build tamamlandı"
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 12 — İmajı dışa aktar
+      # ────────────────────────────────────────────────────────────
+      - name: Export image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$EXPORT_DIR"
+
+          echo "▶ pmbootstrap export çalıştırılıyor..."
+          pmbootstrap export "$EXPORT_DIR"
+
+          echo "▶ Export edilen dosyalar:"
+          ls -lah "$EXPORT_DIR"/
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 13 — Odin paketi oluştur (Samsung heimdall için)
+      # ────────────────────────────────────────────────────────────
+      - name: Export Odin package
+        shell: bash
+        run: |
+          echo "▶ Odin export çalıştırılıyor..."
+          pmbootstrap export --odin "$EXPORT_DIR" \
+            && echo "✅ Odin paketi oluşturuldu" \
+            || echo "⚠️  Odin export başarısız (heimdall desteklemiyor olabilir)"
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 14 — Dosyaları sıkıştır
+      # ────────────────────────────────────────────────────────────
+      - name: Compress output files
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          cd "$EXPORT_DIR"
+
+          for f in *.img *.tar; do
+            [ -f "$f" ] || continue
+            echo "▶ Sıkıştırılıyor: $f"
+            xz -3 -T0 "$f"
+            echo "✅ → ${f}.xz"
+          done
+
+          echo "▶ Son durum:"
+          ls -lah "$EXPORT_DIR"/
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 15 — Build meta verisi
+      # ────────────────────────────────────────────────────────────
+      - name: Write build metadata
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$EXPORT_DIR"
+
+          cat > "$EXPORT_DIR/BUILD_INFO.txt" <<EOF
+          ┌─────────────────────────────────────────┐
+          │   postmarketOS Build Metadata           │
+          └─────────────────────────────────────────┘
+          Device    : $DEVICE
+          UI        : $UI
+          Channel   : $CHANNEL
+          Date      : $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          Commit    : ${{ github.sha }}
+          Ref       : ${{ github.ref }}
+          Run URL   : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Runner OS : ${{ runner.os }}
+          EOF
+
+          cat "$EXPORT_DIR/BUILD_INFO.txt"
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 16 — Artifact yükle
+      # ────────────────────────────────────────────────────────────
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "pmos-${{ env.DEVICE }}-${{ env.UI }}-run${{ github.run_number }}"
+          path: ${{ env.EXPORT_DIR }}/
+          retention-days: 14
+          if-no-files-found: warn
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 17 — GitHub Release
+      # ────────────────────────────────────────────────────────────
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.EXPORT_DIR }}/*
+          generate_release_notes: true
+          body: |
+            ## postmarketOS — Samsung Galaxy J4+ (`j4primelte`)
+
+            | Özellik        | Değer                       |
+            |----------------|-----------------------------|
+            | **UI**         | `${{ env.UI }}`             |
+            | **Channel**    | `${{ env.CHANNEL }}`        |
+            | **Commit**     | `${{ github.sha }}`         |
+            | **Build No**   | `#${{ github.run_number }}` |
+
+            ### Flash Talimatları
+            1. Cihazı **Download Mode**'a alın → Vol- + Home + Power
+            2. `Odin` (Windows) veya `Heimdall` (Linux) ile flash edin
+            3. Varsayılan kullanıcı adı: `pmos`
+
+            > ⚠️ Flash öncesi cihazınızı yedekleyin!
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ────────────────────────────────────────────────────────────
+      # ADIM 18 — Temizlik
+      # ────────────────────────────────────────────────────────────
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          pmbootstrap -y zap                   2>/dev/null || true
+          sudo rm -rf "${PMB_WORK}/chroot_"*   2>/dev/null || true
+          echo "🧹 Temizlik tamamlandı"
