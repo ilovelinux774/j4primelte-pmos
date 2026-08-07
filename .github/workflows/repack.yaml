@@ -1,0 +1,10 @@
+name: Repack artifact
+
+on:
+  workflow_dispatch:
+
+jobs:
+  repack:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "test"
