@@ -1,24 +1,63 @@
+name: Repack artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Önceki workflow run ID"
+        required: true
+        default: "31159895880"
+        type: string
+      artifact_name:
+        description: "Artifact adı"
+        required: false
+        default: "pmos-samsung-j4primelte-phosh-run4"
+        type: string
+
 jobs:
-  compress:
-    runs-on: ubuntu-24.04
+  repack:
+    name: Download + compress artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Download pmos artifact
+      - name: Download artifact from previous run
         uses: actions/download-artifact@v4
         with:
-          name: pmos-samsung-j4primelte-phosh-run4
+          name: ${{ github.event.inputs.artifact_name }}
+          path: ./artifact
+          run-id: ${{ github.event.inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check extracted files
+      - name: Show contents
+        shell: bash
         run: |
-          ls -lah
-          find . -maxdepth 2 -type f -o -type l
+          echo "▶ Artifact içeriği:"
+          ls -lah ./artifact/
+          echo ""
+          echo "▶ Symlink kontrolü:"
+          find ./artifact -type l -ls || echo "Symlink yok"
+          echo ""
+          echo "▶ Dosya tipleri:"
+          file ./artifact/* || true
 
-      - name: Create tar xz archive
+      - name: Compress with tar + xz
+        shell: bash
         run: |
-          tar -cJf pmos-samsung-j4primelte-phosh.tar.xz .
+          set -euo pipefail
+          tar \
+            --dereference \
+            -cf - \
+            -C ./artifact \
+            . \
+            | xz -6 -T0 > pmos-j4primelte.tar.xz
+
+          echo "▶ Sonuç:"
+          ls -lah pmos-j4primelte.tar.xz
 
       - name: Upload compressed artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pmos-samsung-j4primelte-phosh-compressed
-          path: pmos-samsung-j4primelte-phosh.tar.xz
+          name: "pmos-j4primelte-compressed"
+          path: pmos-j4primelte.tar.xz
+          retention-days: 14
