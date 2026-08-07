@@ -42,7 +42,7 @@ env:
   DEVICE:         "samsung-j4primelte"
   UI:             ${{ github.event.inputs.ui             || 'weston' }}
   CHANNEL:        ${{ github.event.inputs.channel        || 'edge'   }}
-  EXTRA_PACKAGES: ${{ github.event.inputs.extra_packages || 'none'   }}
+  EXTRA_PACKAGES: ${{ github.event.inputs.extra_parameters || 'none'   }}
   PMB_WORK:       "/home/runner/.local/var/pmbootstrap"
   PMB_APORTS:     "/home/runner/pmaports"
   EXPORT_DIR:     "/tmp/postmarketOS-export"
@@ -230,25 +230,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          cd "$EXPORT_DIR"
-          for f in *.img *.tar; do
-            if [ -L "$f" ]; then
-              REAL=$(readlink -f "$f")
-              rm "$f"
-              cp "$REAL" "$f"
-            fi
-            [ -f "$f" ] || continue
-            xz -6 -T0 "$f"
-          done
-          ls -lah "$EXPORT_DIR"/
+
+          tar \
+            --dereference \
+            -cJf /tmp/pmos-${{ env.DEVICE }}-${{ env.UI }}.tar.xz \
+            -C "$EXPORT_DIR" \
+            .
+
+          echo "▶ Sonuç:"
+          ls -lah /tmp/pmos-${{ env.DEVICE }}-${{ env.UI }}.tar.xz
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: "pmos-${{ env.DEVICE }}-${{ env.UI }}-run${{ github.run_number }}"
-          path: ${{ env.EXPORT_DIR }}/
+          path: /tmp/pmos-${{ env.DEVICE }}-${{ env.UI }}.tar.xz
           retention-days: 14
           if-no-files-found: warn
 
@@ -256,7 +253,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.EXPORT_DIR }}/*
+          files: /tmp/pmos-${{ env.DEVICE }}-${{ env.UI }}.tar.xz
           generate_release_notes: true
           body: |
             ## postmarketOS – j4primelte
