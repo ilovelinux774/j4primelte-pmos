@@ -176,7 +176,6 @@ jobs:
           set -euo pipefail
           LINUX_APKBUILD="$PMB_APORTS/device/testing/linux-samsung-j4primelte/APKBUILD"
 
-          # Fix 1: makedepends'e dtbtool ekle
           if ! grep -q "dtbtool" "$LINUX_APKBUILD"; then
             sed -i '/^makedepends=/s/"$/ dtbtool"/' "$LINUX_APKBUILD"
             echo "✅ dtbtool makedepends'e eklendi"
@@ -184,9 +183,6 @@ jobs:
             echo "ℹ️  dtbtool zaten var"
           fi
 
-          # Fix 2 + 3: Python ile patch
-          # Single-quote heredoc içinde $VAR expand olmaz
-          # Bu yüzden path'i env variable olarak Python'a geçiyoruz
           LINUX_APKBUILD="$LINUX_APKBUILD" python3 << 'PYEOF'
           import re, os
 
@@ -225,18 +221,6 @@ jobs:
 
           echo "▶ Güncel APKBUILD (ilgili satırlar):"
           grep -E "dtbtool|dtbTool|dt\.img|makedepends" "$LINUX_APKBUILD" || true
-
-      - name: Regenerate checksums
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$PMB_APORTS/device/testing/device-samsung-j4primelte"
-          pmbootstrap checksum device-samsung-j4primelte
-          echo "✅ device checksum güncellendi"
-
-          cd "$PMB_APORTS/device/testing/linux-samsung-j4primelte"
-          pmbootstrap checksum linux-samsung-j4primelte
-          echo "✅ linux checksum güncellendi"
 
       - name: Write config
         shell: bash
@@ -285,6 +269,18 @@ jobs:
           EXTRA="${EXTRA_PACKAGES:-none}"
           [ -z "$EXTRA" ] && EXTRA="none"
           pmbootstrap config extra_packages "$EXTRA"
+
+      - name: Regenerate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PMB_APORTS/device/testing/device-samsung-j4primelte"
+          pmbootstrap checksum device-samsung-j4primelte
+          echo "✅ device checksum güncellendi"
+
+          cd "$PMB_APORTS/device/testing/linux-samsung-j4primelte"
+          pmbootstrap checksum linux-samsung-j4primelte
+          echo "✅ linux checksum güncellendi"
 
       - name: Verify APKBUILDs
         shell: bash
@@ -359,4 +355,4 @@ jobs:
         shell: bash
         run: |
           pmbootstrap -y zap 2>/dev/null || true
-          sudo rm -rf "${PMB_WORK}/chroot_"* 2>/dev/null || true
+          sudo rm -rf "${PMB_WORK}/chroot_"* 2>/dev/null || true 
