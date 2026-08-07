@@ -4,60 +4,46 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: "Önceki workflow run ID"
+        description: "Eski workflow run ID"
         required: true
         default: "31159895880"
-        type: string
       artifact_name:
         description: "Artifact adı"
-        required: false
+        required: true
         default: "pmos-samsung-j4primelte-phosh-run4"
-        type: string
+
+permissions:
+  actions: read
+  contents: read
 
 jobs:
   repack:
-    name: Download + compress artifact
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-      - name: Download artifact from previous run
+      - name: Download old artifact
         uses: actions/download-artifact@v4
         with:
-          name: ${{ github.event.inputs.artifact_name }}
-          path: ./artifact
-          run-id: ${{ github.event.inputs.run_id }}
+          name: ${{ inputs.artifact_name }}
+          path: artifact
+          run-id: ${{ inputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
 
-      - name: Show contents
-        shell: bash
+      - name: Check files
         run: |
-          echo "▶ Artifact içeriği:"
-          ls -lah ./artifact/
-          echo ""
-          echo "▶ Symlink kontrolü:"
-          find ./artifact -type l -ls || echo "Symlink yok"
-          echo ""
-          echo "▶ Dosya tipleri:"
-          file ./artifact/* || true
+          echo "Files:"
+          ls -lah artifact
+          echo "Symlinks:"
+          find artifact -type l -ls || true
 
-      - name: Compress with tar + xz
-        shell: bash
+      - name: Create tar.xz
         run: |
-          set -euo pipefail
-          tar \
-            --dereference \
-            -cf - \
-            -C ./artifact \
-            . \
-            | xz -6 -T0 > pmos-j4primelte.tar.xz
+          tar --dereference -cJf pmos-j4primelte.tar.xz -C artifact .
 
-          echo "▶ Sonuç:"
-          ls -lah pmos-j4primelte.tar.xz
-
-      - name: Upload compressed artifact
+      - name: Upload result
         uses: actions/upload-artifact@v4
         with:
-          name: "pmos-j4primelte-compressed"
+          name: pmos-j4primelte-compressed
           path: pmos-j4primelte.tar.xz
-          retention-days: 14
