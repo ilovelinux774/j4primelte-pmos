@@ -11,13 +11,12 @@ on:
       ui:
         description: "UI"
         required: false
-        default: "sxmo"
+        default: "weston"
         type: choice
         options:
-          - sxmo
-          - fbkeyboard
           - weston
           - xfce4
+          - fbkeyboard
           - phosh
           - plasma-mobile
           - console
@@ -41,9 +40,9 @@ concurrency:
 
 env:
   DEVICE:         "samsung-j4primelte"
-  UI:             ${{ github.event.inputs.ui             || 'sxmo'  }}
-  CHANNEL:        ${{ github.event.inputs.channel        || 'edge'  }}
-  EXTRA_PACKAGES: ${{ github.event.inputs.extra_packages || 'none'  }}
+  UI:             ${{ github.event.inputs.ui             || 'weston' }}
+  CHANNEL:        ${{ github.event.inputs.channel        || 'edge'   }}
+  EXTRA_PACKAGES: ${{ github.event.inputs.extra_packages || 'none'   }}
   PMB_WORK:       "/home/runner/.local/var/pmbootstrap"
   PMB_APORTS:     "/home/runner/pmaports"
   EXPORT_DIR:     "/tmp/postmarketOS-export"
@@ -53,7 +52,7 @@ env:
 
 jobs:
   build:
-    name: "[${{ github.event.inputs.ui || 'sxmo' }}] j4primelte"
+    name: "[${{ github.event.inputs.ui || 'weston' }}] j4primelte"
     runs-on: ubuntu-latest
     timeout-minutes: 240
 
