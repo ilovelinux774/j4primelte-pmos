@@ -86,8 +86,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth=1 https://gitlab.postmarketos.org/postmarketOS/pmbootstrap.git /tmp/pmbootstrap-src
-          pip install --break-system-packages /tmp/pmbootstrap-src || pip install /tmp/pmbootstrap-src
+          git clone --depth=1 \
+            https://gitlab.postmarketos.org/postmarketOS/pmbootstrap.git \
+            /tmp/pmbootstrap-src
+          pip install --break-system-packages /tmp/pmbootstrap-src || \
+            pip install /tmp/pmbootstrap-src
           pmbootstrap --version
 
       - name: Cache HTTP
@@ -115,10 +118,42 @@ jobs:
           set -euo pipefail
           if [ "$CHANNEL" = "edge" ]; then PMAPORTS_BRANCH="main"; else PMAPORTS_BRANCH="$CHANNEL"; fi
 
-          git clone --depth=1 --no-single-branch --branch "$PMAPORTS_BRANCH" "$UPSTREAM_URL" "$PMB_APORTS"
+          # HTTP/2 GitLab'da bazen sorun çıkarıyor
+          git config --global http.version HTTP/1.1
+          git config --global http.postBuffer 524288000
+
+          # pmaports clone — 3 deneme
+          for i in 1 2 3; do
+            echo "▶ pmaports clone denemesi $i/3..."
+            git clone \
+              --depth=1 \
+              --no-single-branch \
+              --branch "$PMAPORTS_BRANCH" \
+              "$UPSTREAM_URL" \
+              "$PMB_APORTS" && break || {
+              echo "⚠️ Clone başarısız, 10 saniye bekleniyor..."
+              rm -rf "$PMB_APORTS"
+              sleep 10
+            }
+          done
+
+          [ -d "$PMB_APORTS" ] || { echo "::error::pmaports clone başarısız!"; exit 1; }
+
+          echo "▶ Branch : $(git -C "$PMB_APORTS" rev-parse --abbrev-ref HEAD)"
+          echo "▶ Commit : $(git -C "$PMB_APORTS" rev-parse --short HEAD)"
           git -C "$PMB_APORTS" show "origin/${PMAPORTS_BRANCH}:channels.cfg" | head -5
 
-          git clone --depth=1 "$J4_FORK_URL" /tmp/pmaports-j4primelte
+          # j4primelte fork — 3 deneme
+          for i in 1 2 3; do
+            echo "▶ j4primelte fork clone denemesi $i/3..."
+            git clone --depth=1 "$J4_FORK_URL" /tmp/pmaports-j4primelte && break || {
+              echo "⚠️ Fork clone başarısız, 10 saniye bekleniyor..."
+              rm -rf /tmp/pmaports-j4primelte
+              sleep 10
+            }
+          done
+
+          [ -d /tmp/pmaports-j4primelte ] || { echo "::error::Fork clone başarısız!"; exit 1; }
 
           J4_PKGS=$(find /tmp/pmaports-j4primelte \
             \( -name "device-samsung-j4primelte" \
@@ -137,6 +172,7 @@ jobs:
           done
 
           rm -rf /tmp/pmaports-j4primelte
+          echo "✅ Overlay tamamlandı"
 
       - name: Patch device APKBUILD mesa
         shell: bash
@@ -176,14 +212,11 @@ jobs:
           set -euo pipefail
           LINUX_APKBUILD="$PMB_APORTS/device/testing/linux-samsung-j4primelte/APKBUILD"
 
-          # Fix 1: makedepends'e dtbtool ekle
           if ! grep -q "dtbtool" "$LINUX_APKBUILD"; then
             sed -i '/^makedepends=/s/"$/ dtbtool"/' "$LINUX_APKBUILD"
             echo "✅ dtbtool makedepends'e eklendi"
           fi
 
-          # Fix 2 + 3: State machine ile build() ve package() fonksiyonlarını bul
-          # Regex yerine satır satır okuma — çok daha güvenilir
           LINUX_APKBUILD="$LINUX_APKBUILD" python3 << 'PYEOF'
           import os
 
@@ -192,14 +225,6 @@ jobs:
           with open(path, 'r') as f:
               lines = f.readlines()
 
-          new_lines = []
-          in_build = False
-          in_package = False
-          brace_depth = 0
-          dtbtool_added = False
-          dtimg_added = False
-
-          # Zaten patch uygulandıysa atla
           content = ''.join(lines)
           already_dtbtool = 'dtbTool' in content
           already_dtimg = 'dt.img' in content
@@ -208,10 +233,16 @@ jobs:
               print("ℹ️  Zaten patch uygulanmış, atlanıyor")
               exit(0)
 
+          new_lines = []
+          in_build = False
+          in_package = False
+          brace_depth = 0
+          dtbtool_added = False
+          dtimg_added = False
+
           for i, line in enumerate(lines):
               stripped = line.strip()
 
-              # Fonksiyon başlangıcını tespit et
               if stripped.startswith('build()'):
                   in_build = True
                   in_package = False
@@ -221,25 +252,21 @@ jobs:
                   in_build = False
                   brace_depth = 0
 
-              # Brace derinliğini takip et
               if in_build or in_package:
                   brace_depth += stripped.count('{') - stripped.count('}')
 
-                  # Fonksiyon kapanıyor mu?
                   if brace_depth <= 0 and '{' in ''.join(lines[max(0,i-5):i+1]):
                       if in_build and not already_dtbtool and not dtbtool_added:
-                          # build() kapanmadan önce dtbTool ekle
                           new_lines.append('\t# QCDT: Qualcomm Concatenated Device Tree\n')
                           new_lines.append('\tdtbTool -s 2048 \\\n')
                           new_lines.append('\t\t-o "$builddir/arch/arm64/boot/dt.img" \\\n')
                           new_lines.append('\t\t"$builddir/arch/arm64/boot/dts/qcom/" \\\n')
-                          new_lines.append('\t\t|| { echo "dtbTool failed or no DTBs found"; ls "$builddir/arch/arm64/boot/dts/qcom/" 2>/dev/null || true; }\n')
+                          new_lines.append('\t\t|| { echo "dtbTool failed"; ls "$builddir/arch/arm64/boot/dts/qcom/" 2>/dev/null || true; }\n')
                           dtbtool_added = True
                           print("✅ dtbTool build() fonksiyonuna eklendi")
                           in_build = False
 
                       elif in_package and not already_dtimg and not dtimg_added:
-                          # package() kapanmadan önce dt.img install ekle
                           new_lines.append('\t# Install QCDT image\n')
                           new_lines.append('\t[ -f "$builddir/arch/arm64/boot/dt.img" ] && \\\n')
                           new_lines.append('\t\tinstall -Dm644 "$builddir/arch/arm64/boot/dt.img" \\\n')
@@ -255,17 +282,13 @@ jobs:
               f.writelines(new_lines)
 
           if not dtbtool_added and not already_dtbtool:
-              print("::warning::dtbTool eklenemedi - build() fonksiyonu bulunamadı")
+              print("::warning::dtbTool eklenemedi")
           if not dtimg_added and not already_dtimg:
-              print("::warning::dt.img install eklenemedi - package() fonksiyonu bulunamadı")
+              print("::warning::dt.img install eklenemedi")
           PYEOF
 
           echo "▶ Güncel APKBUILD (ilgili satırlar):"
           grep -n -E "dtbtool|dtbTool|dt\.img|makedepends" "$LINUX_APKBUILD" || true
-
-          echo ""
-          echo "▶ build() fonksiyonu:"
-          awk '/^build\(\)/,/^\}/' "$LINUX_APKBUILD" | tail -20 || true
 
       - name: Write config
         shell: bash
@@ -409,4 +432,4 @@ jobs:
         shell: bash
         run: |
           pmbootstrap -y zap 2>/dev/null || true
-          sudo rm -rf "${PMB_WORK}/chroot_"* 2>/dev/null || true
+          sudo rm -rf "${PMB_WORK}/chroot_"* 2>/dev/null || true 
