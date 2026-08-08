@@ -201,8 +201,10 @@ jobs:
             echo 'deviceinfo_flash_heimdall_partition_rootfs="SYSTEM"' >> "$DEVICEINFO"
           fi
 
+          sed -i '/deviceinfo_bootimg_append_seandroidenforce/d' "$DEVICEINFO"
+
           echo "▶ Güncel deviceinfo:"
-          grep -E "qcdt|heimdall|flash" "$DEVICEINFO" || true
+          grep -E "qcdt|heimdall|flash|seandroid" "$DEVICEINFO" || true
 
       # ──────────────────────────────────────────────────────────────
       #  KRİTİK FIX v2:
@@ -259,7 +261,7 @@ jobs:
               printf '\t# Gecici dizine sadece j4primelte DTBleri kopyala\n' >> /tmp/build_insert.txt
               printf '\tJ4_DTB_TMP=$(mktemp -d)\n'                       >> /tmp/build_insert.txt
               printf '\tcp $J4_DTBS "$J4_DTB_TMP/"\n'                    >> /tmp/build_insert.txt
-              printf '\tdtbTool -s 2048 -o "$builddir/dt.img" "$J4_DTB_TMP"\n' >> /tmp/build_insert.txt
+              printf '\tdtbTool -s 2048 -p "$builddir/scripts/dtc/" -o "$builddir/dt.img" "$J4_DTB_TMP"\n' >> /tmp/build_insert.txt
               printf '\trm -rf "$J4_DTB_TMP"\n'                           >> /tmp/build_insert.txt
               printf '\techo "✅ dt.img olusturuldu (sadece j4primelte DTB)"\n' >> /tmp/build_insert.txt
 
@@ -442,7 +444,7 @@ jobs:
 
           echo ""
           echo "=== deviceinfo (qcdt/flash/dtb) ==="
-          grep -E "qcdt|heimdall|flash|dtb" "$PMB_APORTS/device/testing/device-samsung-j4primelte/deviceinfo" || true
+          grep -E "qcdt|heimdall|flash|dtb|seandroid" "$PMB_APORTS/device/testing/device-samsung-j4primelte/deviceinfo" || true
 
           echo ""
           echo "=== pmbootstrap config ==="
