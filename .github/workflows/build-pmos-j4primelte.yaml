@@ -106,6 +106,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
+            ${{ env.PMB_WORK }}/cache_ccache_aarch64
             ${{ env.PMB_WORK }}/cache_ccache_armv7
             ${{ env.PMB_WORK }}/cache_ccache_x86_64
           key: ccache-${{ env.DEVICE }}-${{ github.sha }}
@@ -203,97 +204,143 @@ jobs:
           echo "▶ Güncel deviceinfo:"
           grep -E "qcdt|heimdall|flash" "$DEVICEINFO" || true
 
+      # ──────────────────────────────────────────────────────────────
+      #  KRİTİK FIX: Python script → Bash (awk + head/tail)
+      #  Sorun: Python brace-tracking package() fonksiyonunu
+      #         patch edemiyordu. dt.img oluşuyor ama pakete
+      #         install edilmiyordu → mkinitfs bulamıyordu.
+      # ──────────────────────────────────────────────────────────────
       - name: Patch linux APKBUILD (dtbTool + dt.img)
         shell: bash
         run: |
           set -euo pipefail
-          LINUX_APKBUILD="$PMB_APORTS/device/testing/linux-samsung-j4primelte/APKBUILD"
+          APKBUILD="$PMB_APORTS/device/testing/linux-samsung-j4primelte/APKBUILD"
 
-          if ! grep -q "dtbtool" "$LINUX_APKBUILD"; then
-            sed -i '/^makedepends=/s/"$/ dtbtool"/' "$LINUX_APKBUILD"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  PATCH: linux-samsung-j4primelte APKBUILD"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # ── 1) makedepends: dtbtool ekle ──────────────
+          if ! grep -q "dtbtool" "$APKBUILD"; then
+            sed -i '/^makedepends=/s/"$/ dtbtool"/' "$APKBUILD"
             echo "✅ dtbtool makedepends'e eklendi"
+          else
+            echo "ℹ️  dtbtool zaten makedepends'te"
           fi
 
-          LINUX_APKBUILD="$LINUX_APKBUILD" python3 << 'PYEOF'
-          import os
+          # ── 2) build(): dtbTool ekle (yoksa) ──────────
+          if ! grep -q "dtbTool" "$APKBUILD"; then
+            echo "▶ dtbTool build()'e ekleniyor..."
 
-          path = os.environ['LINUX_APKBUILD']
+            # build() kapanış } satırını bul
+            LINE=$(awk '/^build\(\)/{f=1} f && /^}$/{print NR; exit}' "$APKBUILD")
 
-          with open(path, 'r') as f:
-              lines = f.readlines()
+            if [ -z "$LINE" ]; then
+              echo "::warning::build() kapanış } bulunamadı"
+            else
+              # Eklenecek satırları temp dosyaya yaz (tab-indent)
+              printf '\t# QCDT: Qualcomm Concatenated Device Tree\n'     >  /tmp/build_insert.txt
+              printf '\tDTB_DIR=""\n'                                      >> /tmp/build_insert.txt
+              printf '\tfor d in arch/arm/boot/dts/qcom arch/arm/boot/dts/samsung arch/arm64/boot/dts/qcom arch/arm64/boot/dts; do\n' >> /tmp/build_insert.txt
+              printf '\t\tif [ -d "$builddir/$d" ]; then DTB_DIR="$builddir/$d"; break; fi\n' >> /tmp/build_insert.txt
+              printf '\tdone\n'                                            >> /tmp/build_insert.txt
+              printf '\t[ -z "$DTB_DIR" ] && { echo "HATA: DTB dizini bulunamadi!"; exit 1; }\n' >> /tmp/build_insert.txt
+              printf '\techo "▶ DTB dizini: $DTB_DIR"\n'                  >> /tmp/build_insert.txt
+              printf '\tdtbTool -s 2048 -o "$builddir/dt.img" "$DTB_DIR"\n' >> /tmp/build_insert.txt
+              printf '\techo "✅ dt.img olusturuldu"\n'                    >> /tmp/build_insert.txt
 
-          content = ''.join(lines)
-          already_dtbtool = 'dtbTool' in content
-          already_dtimg = 'dt.img' in content
+              # Kapanış } önüne ekle
+              head -n $((LINE-1)) "$APKBUILD" > "${APKBUILD}.tmp"
+              cat /tmp/build_insert.txt    >> "${APKBUILD}.tmp"
+              tail -n +$LINE "$APKBUILD"   >> "${APKBUILD}.tmp"
+              mv "${APKBUILD}.tmp" "$APKBUILD"
 
-          if already_dtbtool and already_dtimg:
-              print("ℹ️  Zaten patch uygulanmış, atlanıyor")
-              exit(0)
+              echo "✅ dtbTool build() fonksiyonuna eklendi (satır $LINE önü)"
+            fi
+          else
+            echo "ℹ️  dtbTool zaten mevcut, atlanıyor"
+          fi
 
-          new_lines = []
-          in_build = False
-          in_package = False
-          brace_depth = 0
-          dtbtool_added = False
-          dtimg_added = False
+          # ── 3) package(): dt.img install ekle (yoksa) ─
+          #    ❗ BU ESKİ PYTHON SCRİPT'İN YAPAMADIĞI KISIM
+          if ! grep -q '/boot/dt\.img' "$APKBUILD"; then
+            echo "▶ dt.img install package()'e ekleniyor..."
 
-          for i, line in enumerate(lines):
-              stripped = line.strip()
+            # package() kapanış } satırını bul
+            LINE=$(awk '/^package\(\)/{f=1} f && /^}$/{print NR; exit}' "$APKBUILD")
 
-              if stripped.startswith('build()'):
-                  in_build = True
-                  in_package = False
-                  brace_depth = 0
-              elif stripped.startswith('package()'):
-                  in_package = True
-                  in_build = False
-                  brace_depth = 0
+            if [ -z "$LINE" ]; then
+              echo "::error::package() kapanış } bulunamadı!"
+              exit 1
+            else
+              # Eklenecek satırları temp dosyaya yaz (tab-indent)
+              printf '\t# Install QCDT dt.img — ZORUNLU\n'                >  /tmp/pkg_insert.txt
+              printf '\tfor _dtimg in arch/arm64/boot/dt.img arch/arm/boot/dt.img dt.img; do\n' >> /tmp/pkg_insert.txt
+              printf '\t\tif [ -f "$_dtimg" ]; then\n'                    >> /tmp/pkg_insert.txt
+              printf '\t\t\tinstall -Dm644 "$_dtimg" "$pkgdir/boot/dt.img"\n' >> /tmp/pkg_insert.txt
+              printf '\t\t\techo "✅ dt.img install edildi: $_dtimg"\n'   >> /tmp/pkg_insert.txt
+              printf '\t\t\tbreak\n'                                      >> /tmp/pkg_insert.txt
+              printf '\t\tfi\n'                                           >> /tmp/pkg_insert.txt
+              printf '\tdone\n'                                           >> /tmp/pkg_insert.txt
+              printf '\tif ! [ -f "$pkgdir/boot/dt.img" ]; then\n'        >> /tmp/pkg_insert.txt
+              printf '\t\techo "HATA: dt.img bulunamadi!"\n'              >> /tmp/pkg_insert.txt
+              printf '\t\texit 1\n'                                       >> /tmp/pkg_insert.txt
+              printf '\tfi\n'                                             >> /tmp/pkg_insert.txt
 
-              if in_build or in_package:
-                  brace_depth += stripped.count('{') - stripped.count('}')
+              # Kapanış } önüne ekle
+              head -n $((LINE-1)) "$APKBUILD" > "${APKBUILD}.tmp"
+              cat /tmp/pkg_insert.txt     >> "${APKBUILD}.tmp"
+              tail -n +$LINE "$APKBUILD"  >> "${APKBUILD}.tmp"
+              mv "${APKBUILD}.tmp" "$APKBUILD"
 
-                  if brace_depth <= 0 and '{' in ''.join(lines[max(0,i-5):i+1]):
-                      if in_build and not already_dtbtool and not dtbtool_added:
-                          # APKBUILD'de build() içinde zaten $builddir'dayız
-                          # Bu yüzden relative path kullanıyoruz ($builddir prefix YOK)
-                          # dtbTool başarısız olursa BUILD PAT LASI N (|| kaldırıldı)
-                          new_lines.append('\t# QCDT: Qualcomm Concatenated Device Tree\n')
-                          new_lines.append('\techo "▶ DTB dosyaları:"\n')
-                          new_lines.append('\tls arch/arm64/boot/dts/qcom/*.dtb 2>/dev/null || echo "UYARI: DTB yok!"\n')
-                          new_lines.append('\tdtbTool -s 2048 \\\n')
-                          new_lines.append('\t\t-o arch/arm64/boot/dt.img \\\n')
-                          new_lines.append('\t\tarch/arm64/boot/dts/qcom/\n')
-                          new_lines.append('\techo "▶ dt.img oluşturuldu: $(ls -lah arch/arm64/boot/dt.img)"\n')
-                          dtbtool_added = True
-                          print("✅ dtbTool build() fonksiyonuna eklendi (relative path, fatal on error)")
-                          in_build = False
-
-                      elif in_package and not already_dtimg and not dtimg_added:
-                          # dt.img MUTLAKA olmalı, yoksa build patlasın
-                          new_lines.append('\t# Install QCDT image — ZORUNLU\n')
-                          new_lines.append('\tinstall -Dm644 arch/arm64/boot/dt.img \\\n')
-                          new_lines.append('\t\t"$pkgdir/boot/dt.img"\n')
-                          dtimg_added = True
-                          print("✅ dt.img install package() fonksiyonuna eklendi (fatal on error)")
-                          in_package = False
-
-              new_lines.append(line)
-
-          with open(path, 'w') as f:
-              f.writelines(new_lines)
-
-          if not dtbtool_added and not already_dtbtool:
-              print("::warning::dtbTool eklenemedi - build() fonksiyonu bulunamadı")
-          if not dtimg_added and not already_dtimg:
-              print("::warning::dt.img install eklenemedi - package() fonksiyonu bulunamadı")
-          PYEOF
-
-          echo "▶ Güncel APKBUILD (ilgili satırlar):"
-          grep -n -E "dtbtool|dtbTool|dt\.img|makedepends" "$LINUX_APKBUILD" || true
+              echo "✅ dt.img install package() fonksiyonuna eklendi (satır $LINE önü)"
+            fi
+          else
+            echo "ℹ️  dt.img install zaten mevcut, atlanıyor"
+          fi
 
           echo ""
-          echo "▶ build() sonu:"
-          awk '/^build\(\)/,/^\}/' "$LINUX_APKBUILD" | tail -15 || true
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  PATCH TAMAMLANDI"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      # ──────────────────────────────────────────────────────────────
+      #  DOĞRULAMA: Patch'lerin gerçekten uygulandığını kontrol et
+      # ──────────────────────────────────────────────────────────────
+      - name: Verify APKBUILD patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          APKBUILD="$PMB_APORTS/device/testing/linux-samsung-j4primelte/APKBUILD"
+
+          echo "=== makedepends ==="
+          grep "makedepends" "$APKBUILD" || true
+
+          echo ""
+          echo "=== build() fonksiyonu (son 20 satır) ==="
+          awk '/^build\(\)/,/^}$/' "$APKBUILD" | tail -20
+
+          echo ""
+          echo "=== package() fonksiyonu (tam) ==="
+          awk '/^package\(\)/,/^}$/' "$APKBUILD"
+
+          echo ""
+          echo "=== dtbTool / dt.img referansları ==="
+          grep -n -E "dtbtool|dtbTool|dt\.img" "$APKBUILD" || true
+
+          # ── Kritik kontroller ──
+          if ! grep -q "dtbTool" "$APKBUILD"; then
+            echo "::error::dtbTool build() içinde bulunamadı!"
+            exit 1
+          fi
+
+          if ! grep -q '/boot/dt\.img' "$APKBUILD"; then
+            echo "::error::dt.img install package() içinde bulunamadı!"
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ Tüm patch'ler doğrulandı"
 
       - name: Write config
         shell: bash
@@ -355,7 +402,7 @@ jobs:
           pmbootstrap checksum linux-samsung-j4primelte
           echo "✅ linux checksum güncellendi"
 
-      - name: Verify APKBUILDs
+      - name: Verify APKBUILDs exist
         shell: bash
         run: |
           set -euo pipefail
@@ -363,6 +410,28 @@ jobs:
           KERNEL_PKG=$(find "$PMB_APORTS" -path "*/linux-${DEVICE}/APKBUILD" -print -quit 2>/dev/null || true)
           if [ -z "$DEVICE_PKG" ]; then echo "::error::device APKBUILD yok!"; exit 1; fi
           if [ -z "$KERNEL_PKG" ]; then echo "::error::kernel APKBUILD yok!"; exit 1; fi
+
+      # ──────────────────────────────────────────────────────────────
+      #  DEBUG: Build öncesi APKBUILD ve deviceinfo durumunu logla
+      # ──────────────────────────────────────────────────────────────
+      - name: Debug pre-build state
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== Linux APKBUILD: build() ==="
+          awk '/^build\(\)/,/^}$/' "$PMB_APORTS/device/testing/linux-samsung-j4primelte/APKBUILD" | head -40
+
+          echo ""
+          echo "=== Linux APKBUILD: package() ==="
+          awk '/^package\(\)/,/^}$/' "$PMB_APORTS/device/testing/linux-samsung-j4primelte/APKBUILD"
+
+          echo ""
+          echo "=== deviceinfo (qcdt/flash/dtb) ==="
+          grep -E "qcdt|heimdall|flash|dtb" "$PMB_APORTS/device/testing/device-samsung-j4primelte/deviceinfo" || true
+
+          echo ""
+          echo "=== pmbootstrap config ==="
+          cat "$HOME/.config/pmbootstrap_v3.cfg"
 
       - name: Build image
         shell: bash
@@ -372,6 +441,31 @@ jobs:
           set -euo pipefail
           PASSWORD="${PMOS_PASSWORD:-147147}"
           printf '%s\n%s\n' "$PASSWORD" "$PASSWORD" | pmbootstrap install --no-fde
+
+      # ──────────────────────────────────────────────────────────────
+      #  BUILD SONRASI: dt.img pakette var mı kontrol et
+      # ──────────────────────────────────────────────────────────────
+      - name: Verify dt.img in kernel package
+        if: always()
+        shell: bash
+        run: |
+          echo "=== dt.img arama (tüm work dizini) ==="
+          find "$PMB_WORK" -name "dt.img" 2>/dev/null | head -10 || true
+
+          echo ""
+          echo "=== linux paketi içinde /boot/ arama ==="
+          find "$PMB_WORK" -path "*/linux-samsung-j4primelte*/boot/*" 2>/dev/null | head -20 || true
+
+          echo ""
+          echo "=== DTB dosyaları ==="
+          find "$PMB_WORK" -name "*.dtb" 2>/dev/null | head -20 || true
+
+          # dt.img pakette var mı?
+          if find "$PMB_WORK" -path "*/linux-samsung-j4primelte*/boot/dt.img" -print -quit 2>/dev/null | grep -q .; then
+            echo "✅ dt.img kernel paketinde bulundu!"
+          else
+            echo "⚠️  dt.img kernel paketinde bulunamadı — mkinitfs başarısız olabilir"
+          fi
 
       - name: Upload pmbootstrap log on failure
         if: failure()
@@ -424,6 +518,7 @@ jobs:
           generate_release_notes: true
           body: |
             ## postmarketOS – j4primelte
+
             | | |
             |---|---|
             | **UI** | `${{ env.UI }}` |
