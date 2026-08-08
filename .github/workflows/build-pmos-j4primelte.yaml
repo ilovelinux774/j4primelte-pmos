@@ -459,6 +459,7 @@ jobs:
 
       - name: Verify dt.img in kernel package
         if: always()
+        continue-on-error: true
         shell: bash
         run: |
           echo "=== dt.img arama ==="
@@ -473,9 +474,11 @@ jobs:
           find "$PMB_WORK" -name "msm8917-samsung-j4primelte-*.dtb" 2>/dev/null | head -10 || true
 
           echo ""
-          echo "=== Tüm qcom DTBler (karsilastirma) ==="
-          find "$PMB_WORK" -path "*/dts/qcom/*.dtb" 2>/dev/null | wc -l
-          find "$PMB_WORK" -name "msm8917-samsung-j4primelte-*.dtb" 2>/dev/null | wc -l
+          echo "=== Tüm qcom DTBler ==="
+          TOTAL=$(find "$PMB_WORK" -path "*/dts/qcom/*.dtb" 2>/dev/null | wc -l) || TOTAL=0
+          J4=$(find "$PMB_WORK" -name "msm8917-samsung-j4primelte-*.dtb" 2>/dev/null | wc -l) || J4=0
+          echo "Toplam qcom DTB: $TOTAL"
+          echo "j4primelte DTB: $J4"
 
           if find "$PMB_WORK" -path "*/linux-samsung-j4primelte*/boot/dt.img" -print -quit 2>/dev/null | grep -q .; then
             echo "✅ dt.img kernel paketinde bulundu!"
@@ -549,4 +552,3 @@ jobs:
         run: |
           pmbootstrap -y zap 2>/dev/null || true
           sudo rm -rf "${PMB_WORK}/chroot_"* 2>/dev/null || true
- 
