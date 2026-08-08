@@ -300,12 +300,14 @@ jobs:
           PASSWORD="${PMOS_PASSWORD:-147147}"
           printf '%s\n%s\n' "$PASSWORD" "$PASSWORD" | pmbootstrap install --no-fde
 
-      - name: Show pmbootstrap log on failure
+      - name: Upload pmbootstrap log on failure
         if: failure()
-        shell: bash
-        run: |
-          echo "▶ pmbootstrap log (son 300 satır):"
-          tail -300 "$PMB_WORK/log.txt" || true
+        uses: actions/upload-artifact@v4
+        with:
+          name: "pmbootstrap-log-run${{ github.run_number }}"
+          path: ${{ env.PMB_WORK }}/log.txt
+          retention-days: 3
+          if-no-files-found: warn
 
       - name: Export image
         shell: bash
@@ -362,4 +364,4 @@ jobs:
         shell: bash
         run: |
           pmbootstrap -y zap 2>/dev/null || true
-          sudo rm -rf "${PMB_WORK}/chroot_"* 2>/dev/null || true
+          sudo rm -rf "${PMB_WORK}/chroot_"* 2>/dev/null || true 
