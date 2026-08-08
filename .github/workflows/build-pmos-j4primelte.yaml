@@ -118,11 +118,9 @@ jobs:
           set -euo pipefail
           if [ "$CHANNEL" = "edge" ]; then PMAPORTS_BRANCH="main"; else PMAPORTS_BRANCH="$CHANNEL"; fi
 
-          # HTTP/2 GitLab'da bazen sorun çıkarıyor
           git config --global http.version HTTP/1.1
           git config --global http.postBuffer 524288000
 
-          # pmaports clone — 3 deneme
           for i in 1 2 3; do
             echo "▶ pmaports clone denemesi $i/3..."
             git clone \
@@ -143,7 +141,6 @@ jobs:
           echo "▶ Commit : $(git -C "$PMB_APORTS" rev-parse --short HEAD)"
           git -C "$PMB_APORTS" show "origin/${PMAPORTS_BRANCH}:channels.cfg" | head -5
 
-          # j4primelte fork — 3 deneme
           for i in 1 2 3; do
             echo "▶ j4primelte fork clone denemesi $i/3..."
             git clone --depth=1 "$J4_FORK_URL" /tmp/pmaports-j4primelte && break || {
@@ -257,23 +254,27 @@ jobs:
 
                   if brace_depth <= 0 and '{' in ''.join(lines[max(0,i-5):i+1]):
                       if in_build and not already_dtbtool and not dtbtool_added:
+                          # APKBUILD'de build() içinde zaten $builddir'dayız
+                          # Bu yüzden relative path kullanıyoruz ($builddir prefix YOK)
+                          # dtbTool başarısız olursa BUILD PAT LASI N (|| kaldırıldı)
                           new_lines.append('\t# QCDT: Qualcomm Concatenated Device Tree\n')
+                          new_lines.append('\techo "▶ DTB dosyaları:"\n')
+                          new_lines.append('\tls arch/arm64/boot/dts/qcom/*.dtb 2>/dev/null || echo "UYARI: DTB yok!"\n')
                           new_lines.append('\tdtbTool -s 2048 \\\n')
-                          new_lines.append('\t\t-o "$builddir/arch/arm64/boot/dt.img" \\\n')
-                          new_lines.append('\t\t"$builddir/arch/arm64/boot/dts/qcom/" \\\n')
-                          new_lines.append('\t\t|| { echo "dtbTool failed"; ls "$builddir/arch/arm64/boot/dts/qcom/" 2>/dev/null || true; }\n')
+                          new_lines.append('\t\t-o arch/arm64/boot/dt.img \\\n')
+                          new_lines.append('\t\tarch/arm64/boot/dts/qcom/\n')
+                          new_lines.append('\techo "▶ dt.img oluşturuldu: $(ls -lah arch/arm64/boot/dt.img)"\n')
                           dtbtool_added = True
-                          print("✅ dtbTool build() fonksiyonuna eklendi")
+                          print("✅ dtbTool build() fonksiyonuna eklendi (relative path, fatal on error)")
                           in_build = False
 
                       elif in_package and not already_dtimg and not dtimg_added:
-                          new_lines.append('\t# Install QCDT image\n')
-                          new_lines.append('\t[ -f "$builddir/arch/arm64/boot/dt.img" ] && \\\n')
-                          new_lines.append('\t\tinstall -Dm644 "$builddir/arch/arm64/boot/dt.img" \\\n')
-                          new_lines.append('\t\t"$pkgdir/boot/dt.img" || \\\n')
-                          new_lines.append('\t\techo "Warning: dt.img not found, skipping"\n')
+                          # dt.img MUTLAKA olmalı, yoksa build patlasın
+                          new_lines.append('\t# Install QCDT image — ZORUNLU\n')
+                          new_lines.append('\tinstall -Dm644 arch/arm64/boot/dt.img \\\n')
+                          new_lines.append('\t\t"$pkgdir/boot/dt.img"\n')
                           dtimg_added = True
-                          print("✅ dt.img install package() fonksiyonuna eklendi")
+                          print("✅ dt.img install package() fonksiyonuna eklendi (fatal on error)")
                           in_package = False
 
               new_lines.append(line)
@@ -282,13 +283,17 @@ jobs:
               f.writelines(new_lines)
 
           if not dtbtool_added and not already_dtbtool:
-              print("::warning::dtbTool eklenemedi")
+              print("::warning::dtbTool eklenemedi - build() fonksiyonu bulunamadı")
           if not dtimg_added and not already_dtimg:
-              print("::warning::dt.img install eklenemedi")
+              print("::warning::dt.img install eklenemedi - package() fonksiyonu bulunamadı")
           PYEOF
 
           echo "▶ Güncel APKBUILD (ilgili satırlar):"
           grep -n -E "dtbtool|dtbTool|dt\.img|makedepends" "$LINUX_APKBUILD" || true
+
+          echo ""
+          echo "▶ build() sonu:"
+          awk '/^build\(\)/,/^\}/' "$LINUX_APKBUILD" | tail -15 || true
 
       - name: Write config
         shell: bash
@@ -432,4 +437,4 @@ jobs:
         shell: bash
         run: |
           pmbootstrap -y zap 2>/dev/null || true
-          sudo rm -rf "${PMB_WORK}/chroot_"* 2>/dev/null || true 
+          sudo rm -rf "${PMB_WORK}/chroot_"* 2>/dev/null || true
