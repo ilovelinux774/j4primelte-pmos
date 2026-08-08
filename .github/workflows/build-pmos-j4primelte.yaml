@@ -205,10 +205,11 @@ jobs:
           grep -E "qcdt|heimdall|flash" "$DEVICEINFO" || true
 
       # ──────────────────────────────────────────────────────────────
-      #  KRİTİK FIX: Python script → Bash (awk + head/tail)
-      #  Sorun: Python brace-tracking package() fonksiyonunu
-      #         patch edemiyordu. dt.img oluşuyor ama pakete
-      #         install edilmiyordu → mkinitfs bulamıyordu.
+      #  KRİTİK FIX v2:
+      #  1) dtbTool'e SADECE j4primelte DTB'ler ver
+      #     (33 DTB → 6 DTB, bootloader doğru match edebilsin)
+      #  2) Python → Bash (awk + head/tail)
+      #     (package() patch'i çalışmıyordu)
       # ──────────────────────────────────────────────────────────────
       - name: Patch linux APKBUILD (dtbTool + dt.img)
         shell: bash
@@ -229,6 +230,7 @@ jobs:
           fi
 
           # ── 2) build(): dtbTool ekle (yoksa) ──────────
+          #    SADECE j4primelte DTB'ler! (msm8917-samsung-j4primelte-*.dtb)
           if ! grep -q "dtbTool" "$APKBUILD"; then
             echo "▶ dtbTool build()'e ekleniyor..."
 
@@ -240,14 +242,26 @@ jobs:
             else
               # Eklenecek satırları temp dosyaya yaz (tab-indent)
               printf '\t# QCDT: Qualcomm Concatenated Device Tree\n'     >  /tmp/build_insert.txt
+              printf '\t# SADECE j4primelte DTB — diger DTBler bootloaderi crash ediyor\n' >> /tmp/build_insert.txt
               printf '\tDTB_DIR=""\n'                                      >> /tmp/build_insert.txt
               printf '\tfor d in arch/arm/boot/dts/qcom arch/arm/boot/dts/samsung arch/arm64/boot/dts/qcom arch/arm64/boot/dts; do\n' >> /tmp/build_insert.txt
               printf '\t\tif [ -d "$builddir/$d" ]; then DTB_DIR="$builddir/$d"; break; fi\n' >> /tmp/build_insert.txt
               printf '\tdone\n'                                            >> /tmp/build_insert.txt
               printf '\t[ -z "$DTB_DIR" ] && { echo "HATA: DTB dizini bulunamadi!"; exit 1; }\n' >> /tmp/build_insert.txt
               printf '\techo "▶ DTB dizini: $DTB_DIR"\n'                  >> /tmp/build_insert.txt
-              printf '\tdtbTool -s 2048 -o "$builddir/dt.img" "$DTB_DIR"\n' >> /tmp/build_insert.txt
-              printf '\techo "✅ dt.img olusturuldu"\n'                    >> /tmp/build_insert.txt
+              printf '\t# Sadece j4primelte DTBleri filtrele\n'           >> /tmp/build_insert.txt
+              printf '\tJ4_DTBS=$(find "$DTB_DIR" -name "msm8917-samsung-j4primelte-*.dtb" | sort)\n' >> /tmp/build_insert.txt
+              printf '\tif [ -z "$J4_DTBS" ]; then\n'                     >> /tmp/build_insert.txt
+              printf '\t\techo "HATA: j4primelte DTB bulunamadi!"; exit 1\n' >> /tmp/build_insert.txt
+              printf '\tfi\n'                                             >> /tmp/build_insert.txt
+              printf '\techo "▶ j4primelte DTB sayisi: $(echo "$J4_DTBS" | wc -l)"\n' >> /tmp/build_insert.txt
+              printf '\techo "$J4_DTBS"\n'                                >> /tmp/build_insert.txt
+              printf '\t# Gecici dizine sadece j4primelte DTBleri kopyala\n' >> /tmp/build_insert.txt
+              printf '\tJ4_DTB_TMP=$(mktemp -d)\n'                       >> /tmp/build_insert.txt
+              printf '\tcp $J4_DTBS "$J4_DTB_TMP/"\n'                    >> /tmp/build_insert.txt
+              printf '\tdtbTool -s 2048 -o "$builddir/dt.img" "$J4_DTB_TMP"\n' >> /tmp/build_insert.txt
+              printf '\trm -rf "$J4_DTB_TMP"\n'                           >> /tmp/build_insert.txt
+              printf '\techo "✅ dt.img olusturuldu (sadece j4primelte DTB)"\n' >> /tmp/build_insert.txt
 
               # Kapanış } önüne ekle
               head -n $((LINE-1)) "$APKBUILD" > "${APKBUILD}.tmp"
@@ -262,7 +276,6 @@ jobs:
           fi
 
           # ── 3) package(): dt.img install ekle (yoksa) ─
-          #    ❗ BU ESKİ PYTHON SCRİPT'İN YAPAMADIĞI KISIM
           if ! grep -q '/boot/dt\.img' "$APKBUILD"; then
             echo "▶ dt.img install package()'e ekleniyor..."
 
@@ -317,8 +330,8 @@ jobs:
           grep "makedepends" "$APKBUILD" || true
 
           echo ""
-          echo "=== build() fonksiyonu (son 20 satır) ==="
-          awk '/^build\(\)/,/^}$/' "$APKBUILD" | tail -20
+          echo "=== build() fonksiyonu (son 25 satır) ==="
+          awk '/^build\(\)/,/^}$/' "$APKBUILD" | tail -25
 
           echo ""
           echo "=== package() fonksiyonu (tam) ==="
@@ -326,7 +339,7 @@ jobs:
 
           echo ""
           echo "=== dtbTool / dt.img referansları ==="
-          grep -n -E "dtbtool|dtbTool|dt\.img" "$APKBUILD" || true
+          grep -n -E "dtbtool|dtbTool|dt\.img|msm8917-samsung" "$APKBUILD" || true
 
           # ── Kritik kontroller ──
           if ! grep -q "dtbTool" "$APKBUILD"; then
@@ -339,8 +352,13 @@ jobs:
             exit 1
           fi
 
+          if ! grep -q 'msm8917-samsung-j4primelte' "$APKBUILD"; then
+            echo "::error::j4primelte DTB filtresi bulunamadı — tüm DTBler ekleniyor!"
+            exit 1
+          fi
+
           echo ""
-          echo "✅ Tüm patch'ler doğrulandı"
+          echo "✅ Tüm patch'ler doğrulandı (sadece j4primelte DTB)"
 
       - name: Write config
         shell: bash
@@ -411,9 +429,6 @@ jobs:
           if [ -z "$DEVICE_PKG" ]; then echo "::error::device APKBUILD yok!"; exit 1; fi
           if [ -z "$KERNEL_PKG" ]; then echo "::error::kernel APKBUILD yok!"; exit 1; fi
 
-      # ──────────────────────────────────────────────────────────────
-      #  DEBUG: Build öncesi APKBUILD ve deviceinfo durumunu logla
-      # ──────────────────────────────────────────────────────────────
       - name: Debug pre-build state
         shell: bash
         run: |
@@ -442,29 +457,30 @@ jobs:
           PASSWORD="${PMOS_PASSWORD:-147147}"
           printf '%s\n%s\n' "$PASSWORD" "$PASSWORD" | pmbootstrap install --no-fde
 
-      # ──────────────────────────────────────────────────────────────
-      #  BUILD SONRASI: dt.img pakette var mı kontrol et
-      # ──────────────────────────────────────────────────────────────
       - name: Verify dt.img in kernel package
         if: always()
         shell: bash
         run: |
-          echo "=== dt.img arama (tüm work dizini) ==="
+          echo "=== dt.img arama ==="
           find "$PMB_WORK" -name "dt.img" 2>/dev/null | head -10 || true
 
           echo ""
-          echo "=== linux paketi içinde /boot/ arama ==="
+          echo "=== linux paketi /boot/ ==="
           find "$PMB_WORK" -path "*/linux-samsung-j4primelte*/boot/*" 2>/dev/null | head -20 || true
 
           echo ""
-          echo "=== DTB dosyaları ==="
-          find "$PMB_WORK" -name "*.dtb" 2>/dev/null | head -20 || true
+          echo "=== j4primelte DTB dosyalari ==="
+          find "$PMB_WORK" -name "msm8917-samsung-j4primelte-*.dtb" 2>/dev/null | head -10 || true
 
-          # dt.img pakette var mı?
+          echo ""
+          echo "=== Tüm qcom DTBler (karsilastirma) ==="
+          find "$PMB_WORK" -path "*/dts/qcom/*.dtb" 2>/dev/null | wc -l
+          find "$PMB_WORK" -name "msm8917-samsung-j4primelte-*.dtb" 2>/dev/null | wc -l
+
           if find "$PMB_WORK" -path "*/linux-samsung-j4primelte*/boot/dt.img" -print -quit 2>/dev/null | grep -q .; then
             echo "✅ dt.img kernel paketinde bulundu!"
           else
-            echo "⚠️  dt.img kernel paketinde bulunamadı — mkinitfs başarısız olabilir"
+            echo "⚠️  dt.img kernel paketinde bulunamadı"
           fi
 
       - name: Upload pmbootstrap log on failure
@@ -533,3 +549,4 @@ jobs:
         run: |
           pmbootstrap -y zap 2>/dev/null || true
           sudo rm -rf "${PMB_WORK}/chroot_"* 2>/dev/null || true
+ 
