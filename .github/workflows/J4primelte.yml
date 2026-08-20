@@ -238,11 +238,16 @@ jobs:
       - name: Initialize pmbootstrap (non-interactive)
         run: |
           set -euo pipefail
-          # Send empty lines to accept every default (work path, pmaports path,
-          # etc.) while the pre-seeded config above supplies device/channel/ui.
-          # --details-to-stdout keeps output flowing so the 900s CI no-output
-          # timeout does not kill the pmaports clone / chroot setup.
-          yes "" | pmbootstrap --details-to-stdout init
+          # Feed a bounded number of empty lines to accept every default. The
+          # pre-seeded config already supplies device/channel/ui/user, and each
+          # prompt's on-screen default is correct (including "n" for building
+          # outdated packages because build_pkgs_on_install=False).
+          #
+          # We do NOT use `yes ""` because it keeps writing after pmbootstrap
+          # closes stdin, receives SIGPIPE, and `set -o pipefail` would turn that
+          # exit 141 into a failed step even though init succeeded ("DONE!").
+          # A bounded printf has no such long-running writer.
+          printf '\n%.0s' {1..200} | pmbootstrap --details-to-stdout init
 
       - name: Build postmarketOS rootfs
         run: |
