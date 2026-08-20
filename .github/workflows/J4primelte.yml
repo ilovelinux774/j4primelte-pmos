@@ -284,10 +284,12 @@ jobs:
           ls -la "$EXP" || true
 
           # Dereference the symlinks (-L) into real files, but only the ones
-          # that actually exist. This is what we will upload/flash.
+          # that actually exist. This is what we will upload/flash. The dtbs/
+          # subdir is copied separately below with -r.
           copied=0
           for f in "$EXP"/*; do
             [ -e "$f" ] || continue
+            [ -d "$f" ] && continue   # handle directories (dtbs) below
             cp -vL "$f" pmos-out/
             copied=$((copied+1))
           done
@@ -316,6 +318,13 @@ jobs:
 
           # Bring the custom lk2nd image alongside the pmOS images.
           cp -v lk2nd-out/lk2nd.img pmos-out/lk2nd-msm8952-j4primelte.img
+
+          # Include the no-PC TWRP flash helper if the repo contains it.
+          if [ -f .github/workflows/flash-pmos-twrp.sh ]; then
+            cp -v .github/workflows/flash-pmos-twrp.sh pmos-out/
+          elif [ -f flash-pmos-twrp.sh ]; then
+            cp -v flash-pmos-twrp.sh pmos-out/
+          fi
 
           # Report sizes before checksumming (rootfs should be multiple GB).
           ls -lah pmos-out/
