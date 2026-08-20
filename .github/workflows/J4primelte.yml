@@ -3,8 +3,10 @@ name: Build j4primelte (lk2nd + postmarketOS)
 # Full CI build for the Samsung Galaxy J4+ (SM-J415F, codename j4primelte,
 # SoC MSM8917). Produces, in one run:
 #   1. lk2nd-msm8952-j4primelte.img   - custom lk2nd that identifies the J4+
-#   2. pmos/boot.img                  - mainline msm89x7 kernel + initramfs
-#   3. pmos/qcom-msm89x7.img          - postmarketOS edge rootfs (console UI)
+#   2. qcom-msm89x7.img               - postmarketOS edge rootfs (raw disk image,
+#                                       ext2 /boot with extlinux + ext4 /; ~1.4G)
+# There is NO separate boot.img: lk2nd is the boot partition and chainloads
+# vmlinuz/initramfs from the rootfs via extlinux.conf.
 #
 # Put this file at: .github/workflows/build-j4primelte.yml and push.
 # Download everything from the run's "Artifacts".
@@ -310,12 +312,6 @@ jobs:
           if [ -f "$ROOTFS_SRC" ] && [ ! -f pmos-out/qcom-msm89x7.img ]; then
             cp -v "$ROOTFS_SRC" pmos-out/qcom-msm89x7.img
           fi
-          if [ ! -f pmos-out/boot.img ]; then
-            # boot.img lives inside the rootfs chroot's /boot
-            BOOT_SRC=$(find "$PMB/chroot_rootfs_qcom-msm89x7/boot" -maxdepth 1 -name 'boot.img' 2>/dev/null | head -n1 || true)
-            [ -n "$BOOT_SRC" ] && cp -v "$BOOT_SRC" pmos-out/boot.img
-          fi
-
           # Bring the custom lk2nd image alongside the pmOS images.
           cp -v lk2nd-out/lk2nd.img pmos-out/lk2nd-msm8952-j4primelte.img
 
@@ -330,10 +326,15 @@ jobs:
           ls -lah pmos-out/
           ( cd pmos-out && sha256sum * > SHA256SUMS.txt 2>/dev/null || true )
 
-          # Sanity: we must have both a boot and a rootfs image.
-          test -s pmos-out/boot.img || { echo "ERROR: boot.img missing/empty"; exit 1; }
-          test -s pmos-out/qcom-msm89x7.img || { echo "ERROR: rootfs image missing/empty"; exit 1; }
-          echo "OK: boot.img and qcom-msm89x7.img present"
+          # Sanity: the two files we actually flash must exist and be non-empty.
+          # There is NO separate boot.img on qcom-msm89x7: lk2nd IS the boot
+          # partition and chainloads vmlinuz/initramfs from the rootfs via
+          # extlinux.conf.
+          test -s pmos-out/lk2nd-msm8952-j4primelte.img \
+            || { echo "ERROR: custom lk2nd image missing/empty"; exit 1; }
+          test -s pmos-out/qcom-msm89x7.img \
+            || { echo "ERROR: rootfs image missing/empty"; exit 1; }
+          echo "OK: lk2nd and qcom-msm89x7.img present ($(du -h pmos-out/qcom-msm89x7.img | cut -f1) rootfs)"
 
       - name: Write flash instructions
         run: |
@@ -345,38 +346,48 @@ jobs:
           lk2nd SHA:    ${{ needs.lk2nd.outputs.lk2nd_sha }}
           UI:           ${{ github.event.inputs.pmos_ui || 'console' }}
           user:         $PMOS_USER
-          password:     $PMOS_PASSWORD   (CHANGE ME!)
+          password:     $PMOS_PASSWORD   (CHANGE ME after first boot!)
 
-          STEP 1 - Flash lk2nd (first time only, from Samsung Download mode)
-            # Power off. Hold Vol Up + Vol Down and plug USB; press Vol Up.
+          FILES
+            lk2nd-msm8952-j4primelte.img  -> flash to BOOT partition
+            qcom-msm89x7.img              -> write RAW to USERDATA partition
+            flash-pmos-twrp.sh            -> one-tap TWRP flasher (no PC)
+
+          There is NO separate boot.img. lk2nd IS the boot partition; it reads
+          vmlinuz/initramfs/extlinux.conf from the /boot inside the rootfs.
+
+          ----------------------------------------------------------------
+          METHOD A - NO PC (recommended): TWRP recovery + microSD
+          ----------------------------------------------------------------
+          1. Copy lk2nd-msm8952-j4primelte.img, qcom-msm89x7.img AND
+             flash-pmos-twrp.sh to the ROOT of a FAT32/exFAT microSD card.
+          2. Insert the SD in the J4+. Boot to TWRP (Vol Up + Power).
+          3. Advanced -> Terminal, run:
+               sh /external_sd/flash-pmos-twrp.sh
+             (if it can't find the SD, run: ls /storage ; then adjust the
+              path in the script or rerun: sh /storage/XXXX-XXXX/flash-*.sh)
+          4. When it prints DONE, remove SD and reboot.
+
+          ----------------------------------------------------------------
+          METHOD B - WITH A PC: fastboot (lk2nd must already be on BOOT)
+          ----------------------------------------------------------------
+          First time only (stock bootloader -> Download mode):
             heimdall flash --BOOT lk2nd-msm8952-j4primelte.img
-
-          STEP 2 - Boot into lk2nd fastboot
-            # Power on; at the lk2nd screen hold Vol Down -> fastboot screen.
-            fastboot devices
-            fastboot oem cmdline        # must be NON-EMPTY
-
-          STEP 3 - Flash the mainline kernel/boot image
-            fastboot flash boot boot.img
-            # If you built with the generic device and it named it differently:
-            #   fastboot flash boot <the boot .img>
-
-          STEP 4 - Reboot to lk2nd again, then flash rootfs to userdata
-            fastboot reboot
-            # Re-enter lk2nd fastboot (hold Vol Down), then:
-            # (from the host where you built it, pmbootstrap knows the path)
+          Then reboot, hold Vol Down at the lk2nd screen for fastboot:
+            fastboot oem cmdline                       # must be NON-EMPTY
             fastboot -S 128M flash userdata qcom-msm89x7.img
-
-          STEP 5 - Reboot
             fastboot reboot
 
-          First boot: screen may stay black until the J4+ panel is added to
-          lk2nd/the kernel. Connect USB and:
-            ssh $PMOS_USER@172.16.42.1
-          (password is $PMOS_PASSWORD, then change it with: passwd)
+          FIRST BOOT
+            The screen may stay black until the J4+ panel is added to lk2nd/
+            the kernel. Connect USB and the kernel brings up USB networking:
+               ssh $PMOS_USER@172.16.42.1
+            password: $PMOS_PASSWORD   (then run: passwd)
 
-          Recovery: lk2nd is on BOOT and never touches SBL/aboot. Re-enter
-          Download mode and heimdall-flash a known-good boot.img to restore.
+          RECOVERY
+            TWRP is on the RECOVERY partition and is never touched. If the
+            phone won't boot, re-enter TWRP and reflash a LineageOS build, or
+            re-run this script. You cannot hard-brick this from BOOT/USERDATA.
           EOF
           cat pmos-out/FLASH.txt
 
