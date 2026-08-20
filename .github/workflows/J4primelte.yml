@@ -1,11 +1,17 @@
-name: Build lk2nd (j4primelte)
+name: Build j4primelte (lk2nd + postmarketOS)
 
-# Builds lk2nd for the Samsung Galaxy J4+ (SM-J415F, codename j4primelte,
-# SoC MSM8917). Produces lk2nd-msm8952-j4primelte.img as a build artifact,
-# and attaches it to a GitHub Release when you push a tag like v0.1.
+# Full CI build for the Samsung Galaxy J4+ (SM-J415F, codename j4primelte,
+# SoC MSM8917). Produces, in one run:
+#   1. lk2nd-msm8952-j4primelte.img   - custom lk2nd that identifies the J4+
+#   2. qcom-msm89x7.img               - postmarketOS edge rootfs (raw disk image,
+#                                       ext2 /boot with extlinux + ext4 /; ~1.4G)
+# There is NO separate boot.img: lk2nd is the boot partition and chainloads
+# vmlinuz/initramfs from the rootfs via extlinux.conf.
 #
-# Put this file at: .github/workflows/build-lk2nd.yml
-# Then push. The image appears under Actions -> the run -> Artifacts.
+# Put this file at: .github/workflows/build-j4primelte.yml and push.
+# Download everything from the run's "Artifacts".
+#
+# On a tag v* it also creates a GitHub Release with all files attached.
 
 on:
   push:
@@ -15,48 +21,56 @@ on:
   workflow_dispatch:
     inputs:
       lk2nd_ref:
-        description: 'lk2nd git ref to build (branch / tag / commit SHA)'
+        description: 'lk2nd git ref (branch/tag/SHA)'
         required: false
         default: 'main'
+      pmos_ui:
+        description: 'postmarketOS UI (console/none/phosh/plasma-mobile/... )'
+        required: false
+        default: 'console'
 
 permissions:
   contents: write
 
+env:
+  PMB: /home/runner/.local/var/pmbootstrap
+  CFG: /home/runner/.config/pmbootstrap_v3.cfg
+
 jobs:
-  build:
-    name: Build lk2nd-msm8952
+  # ---------------------------------------------------------------------------
+  # Job 1: build the custom lk2nd image with the j4primelte DTS
+  # ---------------------------------------------------------------------------
+  lk2nd:
+    name: Build lk2nd
     runs-on: ubuntu-latest
+    outputs:
+      lk2nd_ref: ${{ steps.clone.outputs.ref }}
+      lk2nd_sha: ${{ steps.clone.outputs.sha }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            gcc-arm-none-eabi \
-            device-tree-compiler \
-            bc \
-            python3
+            build-essential gcc-arm-none-eabi device-tree-compiler bc python3
 
       - name: Clone lk2nd
+        id: clone
         run: |
           set -euo pipefail
           REF="${{ github.event.inputs.lk2nd_ref || 'main' }}"
-          echo "Building lk2nd ref: $REF"
-          echo "LK2ND_REF=$REF" >> "$GITHUB_ENV"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
           if ! git clone --depth 1 --branch "$REF" \
                https://github.com/msm8916-mainline/lk2nd.git; then
-            echo "Ref '$REF' is not a branch/tag, trying as commit SHA..."
+            echo "Ref '$REF' not a branch/tag, trying as SHA..."
             git clone https://github.com/msm8916-mainline/lk2nd.git
             cd lk2nd
             git fetch --depth 1 origin "$REF" || true
             git checkout FETCH_HEAD
           fi
           cd lk2nd
-          echo "lk2nd commit: $(git rev-parse HEAD)"
-          echo "LK2ND_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Add j4primelte device tree
         working-directory: lk2nd
@@ -68,20 +82,21 @@ jobs:
           // lk2nd device tree for Samsung Galaxy J4+ (SM-J415F) / j4primelte.
           // SoC: Qualcomm MSM8917 (Snapdragon 425).
           //
-          // Values extracted from running LineageOS 18.1 on SM-J415F:
-          //   qcom,msm-id   = <303 0>,<308 0>,<309 0>
-          //   bootloader    = J415FXXU6BVJ1  -> match "J415F*"
-          // board-id MUST be <8 0> not <8 6>: Samsung SBL masks the revision
-          // byte and crashes with a register dump if board-id is <8 6>.
-
+          // lk2nd DTS for Samsung Galaxy J4+ (SM-J415F), MSM8917.
+          // Modeled EXACTLY on the booting sdm429-samsung-gtowifi.dts (Samsung
+          // on this same msm8952 target): single msm-id, board-id <8 0>, and
+          // the required __symbols__ node. The 308/309 msm-ids and board-id
+          // <8 6> from /proc/device-tree make the Samsung SBL crash with a CPU
+          // register dump, so do NOT add them.
           /dts-v1/;
 
           #include <skeleton64.dtsi>
           #include <lk2nd.dtsi>
 
           / {
-              qcom,msm-id = <QCOM_ID_MSM8917 0>, <308 0>, <309 0>;
+              qcom,msm-id = <QCOM_ID_MSM8917 0>;
               qcom,board-id = <QCOM_BOARD_ID_MTP 0>;
+          /* Bootloader appears to really want to access symbols */
               __symbols__ {};
           };
 
@@ -89,11 +104,8 @@ jobs:
               model = "Samsung Galaxy J4+ (SM-J415F)";
               compatible = "samsung,j4primelte", "samsung,j4prime";
               lk2nd,match-bootloader = "J415F*";
-              // No lk2nd,dtb-files yet: no upstream j4primelte DTB exists.
-              // The generic msm89x7 kernel uses its own appended DTB set.
           };
           EOF
-          echo "Wrote $DTS"
           sed -n '1,60p' "$DTS"
 
       - name: Register DTB in rules.mk
@@ -115,60 +127,283 @@ jobs:
         working-directory: lk2nd
         run: |
           set -euo pipefail
-          # IMPORTANT: MSM8917 uses the msm8952 target, NOT msm8916.
           make -j"$(nproc)" TOOLCHAIN_PREFIX=arm-none-eabi- lk2nd-msm8952
           test -f build-lk2nd-msm8952/lk2nd.img
           ls -la build-lk2nd-msm8952/lk2nd.img
 
-      - name: Verify j4primelte is embedded in the image
+      - name: Verify j4primelte is embedded
         working-directory: lk2nd
         run: |
           set -euo pipefail
-          if strings build-lk2nd-msm8952/lk2nd.img | grep -q "Samsung Galaxy J4+"; then
-            echo "OK: j4primelte DTB found in lk2nd.img"
-          else
-            echo "ERROR: j4primelte DTB not found in image" >&2
-            exit 1
-          fi
+          strings build-lk2nd-msm8952/lk2nd.img | grep -q "Samsung Galaxy J4+" \
+            && echo "OK: j4primelte DTB found" \
+            || { echo "ERROR: DTB not found"; exit 1; }
 
-      - name: Stage release artifacts
-        run: |
-          set -euo pipefail
-          mkdir -p out
-          cp lk2nd/build-lk2nd-msm8952/lk2nd.img out/lk2nd-msm8952-j4primelte.img
-          cd out
-          sha256sum lk2nd-msm8952-j4primelte.img > lk2nd-msm8952-j4primelte.img.sha256
-          {
-            echo "lk2nd build for Samsung Galaxy J4+ (SM-J415F) / j4primelte"
-            echo "========================================================="
-            echo "Built:      $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "lk2nd ref:  ${LK2ND_REF}"
-            echo "lk2nd SHA:  ${LK2ND_SHA}"
-            echo "Target:     lk2nd-msm8952 (MSM8917)"
-            echo "Match:      bootloader J415F*"
-            echo
-            echo "Flash (first time, from Samsung Download mode):"
-            echo "  heimdall flash --BOOT lk2nd-msm8952-j4primelte.img"
-            echo
-            echo "Then enter lk2nd fastboot (hold Volume Down after the lk2nd"
-            echo "screen appears) and verify: fastboot oem cmdline"
-          } | tee BUILD_INFO.txt
-          ls -la
-
-      - name: Upload build artifact
+      - name: Upload lk2nd artifact
         uses: actions/upload-artifact@v4
         with:
           name: lk2nd-j4primelte
-          path: out/
-          retention-days: 90
+          path: lk2nd/build-lk2nd-msm8952/lk2nd.img
           if-no-files-found: error
+          retention-days: 90
+
+  # ---------------------------------------------------------------------------
+  # Job 2: build postmarketOS edge for the generic qcom-msm89x7 device
+  # ---------------------------------------------------------------------------
+  pmos:
+    name: Build postmarketOS
+    runs-on: ubuntu-latest
+    needs: lk2nd
+    timeout-minutes: 60
+    env:
+      # Non-interactive password for the default user (CHANGE ME after first boot)
+      PMOS_USER: user
+      PMOS_PASSWORD: 147147
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3 python3-pip python3-venv git openssl \
+            qemu-user-static binfmt-support \
+            android-sdk-libsparse-utils cpio xz-utils zstd file
+
+      - name: Install pmbootstrap (from official git; not on PyPI)
+        run: |
+          set -euo pipefail
+          # pmbootstrap is NOT published on PyPI, so pipx/pip cannot install it
+          # by name. Clone the official repo and put it on PATH.
+          git clone --depth 1 https://gitlab.postmarketos.org/postmarketOS/pmbootstrap.git
+          mkdir -p "$HOME/.local/bin"
+          ln -sf "$PWD/pmbootstrap/pmbootstrap.py" "$HOME/.local/bin/pmbootstrap"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # Report any missing host deps and install them.
+          ( pmbootstrap --version ) || true
+          pmbootstrap --version
+
+      - name: Download lk2nd artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lk2nd-j4primelte
+          path: lk2nd-out
+
+      # Configure pmbootstrap WITHOUT the interactive wizard. We write the
+      # pmbootstrap_v3.cfg (TOML) at column 0, then run `yes "" | pmbootstrap
+      # init` which is the official non-interactive method (pmbootstrap's own
+      # CI uses it). It creates the work path, clones pmaports, and accepts
+      # defaults while honoring the pre-seeded config below.
+      - name: Write non-interactive pmbootstrap config
+        env:
+          PMOS_UI: ${{ github.event.inputs.pmos_ui || 'console' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$CFG")"
+          # Write a minimal valid pmbootstrap v3 config via Python so YAML
+          # indentation never leaks into the TOML. Do NOT set 'aports' here:
+          # in pmbootstrap 3.x it is a LIST of pmaports repos, and setting it
+          # to "" (empty list) makes `pmbootstrap init` crash with IndexError.
+          # Let init clone pmaports to its default path instead.
+          python3 - "$CFG" <<'PY'
+          import configparser, os, sys
+          cfg = configparser.ConfigParser()
+          cfg["pmbootstrap"] = {
+              "work": os.environ["PMB"],
+              "config_version": "3",
+              "channel": "edge",
+              "device": "qcom-msm89x7",
+              "kernel": "stable",
+              "user": os.environ["PMOS_USER"],
+              "ui": os.environ["PMOS_UI"],
+              "hostname": "j4plus",
+              "timezone": "Europe/Istanbul",
+              "locale": "en_US.UTF-8",
+              "keymap": "us",
+              "ccache": "True",
+              "ccache_size": "5G",
+              "jobs": str(os.cpu_count()),
+              "extra_packages": "none",
+              "nonfree_firmware": "True",
+              "nonfree_userland": "False",
+              "ssh_keys": "False",
+              # Use binary packages, do NOT compile outdated aports in CI.
+              "build_pkgs_on_install": "False",
+              "is_default_channel": "False",
+          }
+          with open(sys.argv[1], "w") as f:
+              cfg.write(f)
+          PY
+          echo "===== config ====="
+          cat "$CFG"
+
+      - name: Initialize pmbootstrap (non-interactive)
+        run: |
+          set -euo pipefail
+          # Feed a bounded number of empty lines to accept every default. The
+          # pre-seeded config already supplies device/channel/ui/user, and each
+          # prompt's on-screen default is correct (including "n" for building
+          # outdated packages because build_pkgs_on_install=False).
+          #
+          # We do NOT use `yes ""` because it keeps writing after pmbootstrap
+          # closes stdin, receives SIGPIPE, and `set -o pipefail` would turn that
+          # exit 141 into a failed step even though init succeeded ("DONE!").
+          # A bounded printf has no such long-running writer.
+          printf '\n%.0s' {1..200} | pmbootstrap --details-to-stdout init
+
+      - name: Build postmarketOS rootfs
+        run: |
+          set -euo pipefail
+          # -y (== --assume-yes) is a GLOBAL flag and must come BEFORE the
+          # 'install' subcommand; there is no '--yes'. --password is an
+          # install-specific flag and sets the user password non-interactively
+          # (plain text in CI logs by design, per pmbootstrap). build_pkgs_
+          # on_install=False makes it use binary packages. --details-to-stdout
+          # keeps output flowing to avoid the 900s CI no-output timeout.
+          pmbootstrap -y --details-to-stdout install --password "$PMOS_PASSWORD"
+          pmbootstrap status || true
+
+      - name: Export images
+        run: |
+          set -euo pipefail
+          rm -rf pmos-out && mkdir -p pmos-out
+
+          # Unmount all chroot bind-mounts (/proc, /sys, /dev) BEFORE copying.
+          # Leaving them mounted is what causes the "Permission denied" noise
+          # under /proc while traversing the chroot, and can also cause the
+          # rootfs copy to pick up pseudo-files instead of the finished image.
+          # This does NOT delete the built rootfs image, which lives in
+          # chroot_native/home/pmos/rootfs/.
+          pmbootstrap shutdown || true
+
+          # Let pmbootstrap create the convenience symlink farm. It prints,
+          # e.g. " * boot.img (...)" and " * qcom-msm89x7.img (Rootfs ...)".
+          EXP=/tmp/postmarketOS-export
+          rm -rf "$EXP"
+          pmbootstrap export
+
+          echo "===== export folder contents ====="
+          ls -la "$EXP" || true
+
+          # Dereference the symlinks (-L) into real files, but only the ones
+          # that actually exist. This is what we will upload/flash. The dtbs/
+          # subdir is copied separately below with -r.
+          copied=0
+          for f in "$EXP"/*; do
+            [ -e "$f" ] || continue
+            [ -d "$f" ] && continue   # handle directories (dtbs) below
+            cp -vL "$f" pmos-out/
+            copied=$((copied+1))
+          done
+          if [ "$copied" -eq 0 ]; then
+            echo "ERROR: pmbootstrap export produced no files" >&2
+            exit 1
+          fi
+
+          # Also copy any device-tree blobs (needed for panel/bring-up later).
+          if [ -d "$EXP/dtbs" ]; then
+            mkdir -p pmos-out/dtbs
+            cp -vL "$EXP"/dtbs/* pmos-out/dtbs/ || true
+          fi
+
+          # Belt-and-suspenders: if the export symlinks missed the rootfs for
+          # some reason, grab the real image directly from its canonical path.
+          ROOTFS_SRC="$PMB/chroot_native/home/pmos/rootfs/qcom-msm89x7.img"
+          if [ -f "$ROOTFS_SRC" ] && [ ! -f pmos-out/qcom-msm89x7.img ]; then
+            cp -v "$ROOTFS_SRC" pmos-out/qcom-msm89x7.img
+          fi
+          # Bring the custom lk2nd image alongside the pmOS images.
+          cp -v lk2nd-out/lk2nd.img pmos-out/lk2nd-msm8952-j4primelte.img
+
+          # Include the no-PC TWRP flash helpers if the repo contains them.
+          for s in flash-pmos-twrp.sh flash-to-system-twrp.sh; do
+            if [ -f ".github/workflows/$s" ]; then
+              cp -v ".github/workflows/$s" pmos-out/
+            elif [ -f "$s" ]; then
+              cp -v "$s" pmos-out/
+            fi
+          done
+
+          # Report sizes before checksumming (rootfs should be multiple GB).
+          ls -lah pmos-out/
+          ( cd pmos-out && sha256sum * > SHA256SUMS.txt 2>/dev/null || true )
+
+          # Sanity: the two files we actually flash must exist and be non-empty.
+          # There is NO separate boot.img on qcom-msm89x7: lk2nd IS the boot
+          # partition and chainloads vmlinuz/initramfs from the rootfs via
+          # extlinux.conf.
+          test -s pmos-out/lk2nd-msm8952-j4primelte.img \
+            || { echo "ERROR: custom lk2nd image missing/empty"; exit 1; }
+          test -s pmos-out/qcom-msm89x7.img \
+            || { echo "ERROR: rootfs image missing/empty"; exit 1; }
+          echo "OK: lk2nd and qcom-msm89x7.img present ($(du -h pmos-out/qcom-msm89x7.img | cut -f1) rootfs)"
+
+      - name: Write flash instructions
+        run: |
+          cat > pmos-out/FLASH.txt <<EOF
+          Samsung Galaxy J4+ (SM-J415F) - postmarketOS edge (qcom-msm89x7)
+          =================================================================
+          Built:        $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          lk2nd ref:    ${{ needs.lk2nd.outputs.lk2nd_ref }}
+          lk2nd SHA:    ${{ needs.lk2nd.outputs.lk2nd_sha }}
+          UI:           ${{ github.event.inputs.pmos_ui || 'console' }}
+          user:         $PMOS_USER
+          password:     $PMOS_PASSWORD   (CHANGE ME after first boot!)
+
+          FILES
+            lk2nd-msm8952-j4primelte.img  -> flash to BOOT partition
+            qcom-msm89x7.img              -> write RAW to USERDATA partition
+            flash-pmos-twrp.sh            -> one-tap TWRP flasher (no PC)
+
+          There is NO separate boot.img. lk2nd IS the boot partition; it reads
+          vmlinuz/initramfs/extlinux.conf from the /boot inside the rootfs.
+
+          ----------------------------------------------------------------
+          METHOD A - NO PC (recommended): TWRP recovery + microSD
+          ----------------------------------------------------------------
+          1. Copy lk2nd-msm8952-j4primelte.img, qcom-msm89x7.img AND
+             flash-pmos-twrp.sh to the ROOT of a FAT32/exFAT microSD card.
+          2. Insert the SD in the J4+. Boot to TWRP (Vol Up + Power).
+          3. Advanced -> Terminal, run:
+               sh /external_sd/flash-pmos-twrp.sh
+             (if it can't find the SD, run: ls /storage ; then adjust the
+              path in the script or rerun: sh /storage/XXXX-XXXX/flash-*.sh)
+          4. When it prints DONE, remove SD and reboot.
+
+          ----------------------------------------------------------------
+          METHOD B - WITH A PC: fastboot (lk2nd must already be on BOOT)
+          ----------------------------------------------------------------
+          First time only (stock bootloader -> Download mode):
+            heimdall flash --BOOT lk2nd-msm8952-j4primelte.img
+          Then reboot, hold Vol Down at the lk2nd screen for fastboot:
+            fastboot oem cmdline                       # must be NON-EMPTY
+            fastboot -S 128M flash userdata qcom-msm89x7.img
+            fastboot reboot
+
+          FIRST BOOT
+            The screen may stay black until the J4+ panel is added to lk2nd/
+            the kernel. Connect USB and the kernel brings up USB networking:
+               ssh $PMOS_USER@172.16.42.1
+            password: $PMOS_PASSWORD   (then run: passwd)
+
+          RECOVERY
+            TWRP is on the RECOVERY partition and is never touched. If the
+            phone won't boot, re-enter TWRP and reflash a LineageOS build, or
+            re-run this script. You cannot hard-brick this from BOOT/USERDATA.
+          EOF
+          cat pmos-out/FLASH.txt
+
+      - name: Upload postmarketOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: postmarketos-j4primelte
+          path: pmos-out/
+          if-no-files-found: warn
+          retention-days: 90
 
       - name: Release on tag
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            out/lk2nd-msm8952-j4primelte.img
-            out/lk2nd-msm8952-j4primelte.img.sha256
-            out/BUILD_INFO.txt
+          files: pmos-out/*
           generate_release_notes: true
