@@ -8,8 +8,6 @@ name: Build j4primelte (lk2nd + postmarketOS)
 #
 # Put this file at: .github/workflows/build-j4primelte.yml and push.
 # Download everything from the run's "Artifacts".
-#
-# On a tag v* it also creates a GitHub Release with all files attached.
 
 on:
   push:
