@@ -221,7 +221,7 @@ jobs:
               "ccache": "True",
               "ccache_size": "5G",
               "jobs": str(os.cpu_count()),
-              "extra_packages": "",
+              "extra_packages": "none",
               "nonfree_firmware": "True",
               "nonfree_userland": "False",
               "ssh_keys": "False",
