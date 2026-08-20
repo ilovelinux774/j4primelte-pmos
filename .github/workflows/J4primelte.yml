@@ -198,13 +198,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$(dirname "$CFG")"
-          # Write TOML config via Python so YAML indentation never leaks into
-          # the file (a column-0 heredoc would break the YAML literal block).
+          # Write a minimal valid pmbootstrap v3 config via Python so YAML
+          # indentation never leaks into the TOML. Do NOT set 'aports' here:
+          # in pmbootstrap 3.x it is a LIST of pmaports repos, and setting it
+          # to "" (empty list) makes `pmbootstrap init` crash with IndexError.
+          # Let init clone pmaports to its default path instead.
           python3 - "$CFG" <<'PY'
           import configparser, os, sys
           cfg = configparser.ConfigParser()
           cfg["pmbootstrap"] = {
-              "aports": "",
               "work": os.environ["PMB"],
               "config_version": "3",
               "channel": "edge",
@@ -225,8 +227,6 @@ jobs:
               "ssh_keys": "False",
               # Use binary packages, do NOT compile outdated aports in CI.
               "build_pkgs_on_install": "False",
-              "pmaports_src": "",
-              "pmaports_target_revision": "",
               "is_default_channel": "False",
           }
           with open(sys.argv[1], "w") as f:
@@ -238,11 +238,11 @@ jobs:
       - name: Initialize pmbootstrap (non-interactive)
         run: |
           set -euo pipefail
-          # Send empty lines to accept every default (our config pre-seeds
-          # device/channel/ui). --details-to-stdout keeps output flowing so the
-          # 900s CI no-output timeout does not kill the pmaports clone.
+          # Send empty lines to accept every default (work path, pmaports path,
+          # etc.) while the pre-seeded config above supplies device/channel/ui.
+          # --details-to-stdout keeps output flowing so the 900s CI no-output
+          # timeout does not kill the pmaports clone / chroot setup.
           yes "" | pmbootstrap --details-to-stdout init
-          pmbootstrap status || true
 
       - name: Build postmarketOS rootfs
         run: |
