@@ -265,35 +265,66 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf pmos-out && mkdir -p pmos-out
-          # Symlink farm to all generated images (boot.img, rootfs *.img, etc.)
+
+          # Unmount all chroot bind-mounts (/proc, /sys, /dev) BEFORE copying.
+          # Leaving them mounted is what causes the "Permission denied" noise
+          # under /proc while traversing the chroot, and can also cause the
+          # rootfs copy to pick up pseudo-files instead of the finished image.
+          # This does NOT delete the built rootfs image, which lives in
+          # chroot_native/home/pmos/rootfs/.
+          pmbootstrap shutdown || true
+
+          # Let pmbootstrap create the convenience symlink farm. It prints,
+          # e.g. " * boot.img (...)" and " * qcom-msm89x7.img (Rootfs ...)".
+          EXP=/tmp/postmarketOS-export
+          rm -rf "$EXP"
           pmbootstrap export
-          EXP=$(readlink -f /tmp/postmarketOS-export 2>/dev/null || \
-                ls -d /tmp/postmarketOS-export 2>/dev/null || true)
-          if [ -z "$EXP" ] || [ ! -d "$EXP" ]; then
-            # Newer pmbootstrap uses work/chroot_native/home/pmos/rootfs images
-            # and boot images; copy whatever looks relevant.
-            EXP="$(find "$PMB" -maxdepth 5 -type d -name export 2>/dev/null | head -n1 || true)"
+
+          echo "===== export folder contents ====="
+          ls -la "$EXP" || true
+
+          # Dereference the symlinks (-L) into real files, but only the ones
+          # that actually exist. This is what we will upload/flash.
+          copied=0
+          for f in "$EXP"/*; do
+            [ -e "$f" ] || continue
+            cp -vL "$f" pmos-out/
+            copied=$((copied+1))
+          done
+          if [ "$copied" -eq 0 ]; then
+            echo "ERROR: pmbootstrap export produced no files" >&2
+            exit 1
           fi
-          echo "Export dir: $EXP"
-          find "$PMB" -maxdepth 6 \
-            \( -name 'boot.img' -o -name '*.img' -o -name '*.img.xz' -o -name 'initramfs*' \) \
-            -printf '%p\n' | tee /tmp/images.txt
-          # Collect the boot image and the device rootfs image.
-          while IFS= read -r f; do
-            cp -v "$f" pmos-out/
-          done < /tmp/images.txt
-          if [ -d "$EXP" ]; then
-            cp -av "$EXP"/. pmos-out/ || true
+
+          # Also copy any device-tree blobs (needed for panel/bring-up later).
+          if [ -d "$EXP/dtbs" ]; then
+            mkdir -p pmos-out/dtbs
+            cp -vL "$EXP"/dtbs/* pmos-out/dtbs/ || true
           fi
-          # Normalize names for the generic device rootfs.
-          ( cd pmos-out
-            [ -f qcom-msm89x7.img ] || true
-            for f in *qcom-msm89x7*.img; do [ -e "$f" ] && cp -v "$f" qcom-msm89x7.img && break; done || true
-          )
+
+          # Belt-and-suspenders: if the export symlinks missed the rootfs for
+          # some reason, grab the real image directly from its canonical path.
+          ROOTFS_SRC="$PMB/chroot_native/home/pmos/rootfs/qcom-msm89x7.img"
+          if [ -f "$ROOTFS_SRC" ] && [ ! -f pmos-out/qcom-msm89x7.img ]; then
+            cp -v "$ROOTFS_SRC" pmos-out/qcom-msm89x7.img
+          fi
+          if [ ! -f pmos-out/boot.img ]; then
+            # boot.img lives inside the rootfs chroot's /boot
+            BOOT_SRC=$(find "$PMB/chroot_rootfs_qcom-msm89x7/boot" -maxdepth 1 -name 'boot.img' 2>/dev/null | head -n1 || true)
+            [ -n "$BOOT_SRC" ] && cp -v "$BOOT_SRC" pmos-out/boot.img
+          fi
+
           # Bring the custom lk2nd image alongside the pmOS images.
           cp -v lk2nd-out/lk2nd.img pmos-out/lk2nd-msm8952-j4primelte.img
-          ( cd pmos-out && sha256sum * > SHA256SUMS.txt )
-          ls -la pmos-out/
+
+          # Report sizes before checksumming (rootfs should be multiple GB).
+          ls -lah pmos-out/
+          ( cd pmos-out && sha256sum * > SHA256SUMS.txt 2>/dev/null || true )
+
+          # Sanity: we must have both a boot and a rootfs image.
+          test -s pmos-out/boot.img || { echo "ERROR: boot.img missing/empty"; exit 1; }
+          test -s pmos-out/qcom-msm89x7.img || { echo "ERROR: rootfs image missing/empty"; exit 1; }
+          echo "OK: boot.img and qcom-msm89x7.img present"
 
       - name: Write flash instructions
         run: |
