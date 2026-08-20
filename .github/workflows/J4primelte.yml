@@ -32,7 +32,7 @@ permissions:
 
 env:
   PMB: /home/runner/.local/var/pmbootstrap
-  CFG: /home/runner/.config/pmbootstrap.cfg
+  CFG: /home/runner/.config/pmbootstrap_v3.cfg
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -168,12 +168,17 @@ jobs:
             qemu-user-static binfmt-support \
             android-sdk-libsparse-utils cpio xz-utils zstd file
 
-      - name: Install pmbootstrap
+      - name: Install pmbootstrap (from official git; not on PyPI)
         run: |
-          python3 -m pip install --user --upgrade pipx
-          ~/.local/bin/pipx ensurepath
-          ~/.local/bin/pipx install pmbootstrap
+          set -euo pipefail
+          # pmbootstrap is NOT published on PyPI, so pipx/pip cannot install it
+          # by name. Clone the official repo and put it on PATH.
+          git clone --depth 1 https://gitlab.postmarketos.org/postmarketOS/pmbootstrap.git
+          mkdir -p "$HOME/.local/bin"
+          ln -sf "$PWD/pmbootstrap/pmbootstrap.py" "$HOME/.local/bin/pmbootstrap"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # Report any missing host deps and install them.
+          ( pmbootstrap --version ) || true
           pmbootstrap --version
 
       - name: Download lk2nd artifact
