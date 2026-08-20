@@ -187,52 +187,71 @@ jobs:
           name: lk2nd-j4primelte
           path: lk2nd-out
 
-      # Configure pmbootstrap WITHOUT the interactive wizard by writing the
-      # pmbootstrap_v3.cfg directly. qcom-msm89x7 is the generic mainline port
-      # for MSM8917 (same SoC as the J4+); it pulls in linux-postmarketos-qcom-msm89x7.
+      # Configure pmbootstrap WITHOUT the interactive wizard. We write the
+      # pmbootstrap_v3.cfg (TOML) at column 0, then run `yes "" | pmbootstrap
+      # init` which is the official non-interactive method (pmbootstrap's own
+      # CI uses it). It creates the work path, clones pmaports, and accepts
+      # defaults while honoring the pre-seeded config below.
       - name: Write non-interactive pmbootstrap config
+        env:
+          PMOS_UI: ${{ github.event.inputs.pmos_ui || 'console' }}
         run: |
           set -euo pipefail
           mkdir -p "$(dirname "$CFG")"
-          cat > "$CFG" <<EOF
-          [pmbootstrap]
-          aports =
-          work = $PMB
-          config_version = 3
-          channel = edge
-          device = qcom-msm89x7
-          kernel = stable
-          user = $PMOS_USER
-          ui = ${{ github.event.inputs.pmos_ui || 'console' }}
-          hostname = j4plus
-          timezone = Europe/Istanbul
-          locale = en_US.UTF-8
-          keymap = us
-          ccache = True
-          ccache_size = 5G
-          jobs = $(nproc)
-          extra_packages =
-          nonfree_firmware = True
-          nonfree_userland = False
-          ssh_keys = False
-          # Use binary packages, do NOT compile outdated aports locally in CI.
-          build_pkgs_on_install = False
-          pmaports_src =
-          pmaports_target_revision =
-          is_default_channel = False
-          EOF
-          # pmbootstrap uses the config as a base; pull pmaports now.
-          pmbootstrap pull
-          pmbootstrap status || true
+          # Write TOML config via Python so YAML indentation never leaks into
+          # the file (a column-0 heredoc would break the YAML literal block).
+          python3 - "$CFG" <<'PY'
+          import configparser, os, sys
+          cfg = configparser.ConfigParser()
+          cfg["pmbootstrap"] = {
+              "aports": "",
+              "work": os.environ["PMB"],
+              "config_version": "3",
+              "channel": "edge",
+              "device": "qcom-msm89x7",
+              "kernel": "stable",
+              "user": os.environ["PMOS_USER"],
+              "ui": os.environ["PMOS_UI"],
+              "hostname": "j4plus",
+              "timezone": "Europe/Istanbul",
+              "locale": "en_US.UTF-8",
+              "keymap": "us",
+              "ccache": "True",
+              "ccache_size": "5G",
+              "jobs": str(os.cpu_count()),
+              "extra_packages": "",
+              "nonfree_firmware": "True",
+              "nonfree_userland": "False",
+              "ssh_keys": "False",
+              # Use binary packages, do NOT compile outdated aports in CI.
+              "build_pkgs_on_install": "False",
+              "pmaports_src": "",
+              "pmaports_target_revision": "",
+              "is_default_channel": "False",
+          }
+          with open(sys.argv[1], "w") as f:
+              cfg.write(f)
+          PY
           echo "===== config ====="
           cat "$CFG"
+
+      - name: Initialize pmbootstrap (non-interactive)
+        run: |
+          set -euo pipefail
+          # Send empty lines to accept every default (our config pre-seeds
+          # device/channel/ui). --details-to-stdout keeps output flowing so the
+          # 900s CI no-output timeout does not kill the pmaports clone.
+          yes "" | pmbootstrap --details-to-stdout init
+          pmbootstrap status || true
 
       - name: Build postmarketOS rootfs
         run: |
           set -euo pipefail
-          # build_pkgs_on_install=False (set in config) makes pmbootstrap use
-          # binary packages and never try to compile the kernel in CI.
-          pmbootstrap --yes install
+          # --password sets the user password non-interactively (used by the
+          # official images.postmarketos.org builders). --yes skips confirms.
+          # build_pkgs_on_install=False (in config) means use binary packages.
+          # --details-to-stdout keeps output flowing to avoid the 900s CI timeout.
+          pmbootstrap --details-to-stdout --yes install --password "$PMOS_PASSWORD"
           pmbootstrap status || true
 
       - name: Export images
