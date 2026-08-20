@@ -8,6 +8,8 @@ name: Build j4primelte (lk2nd + postmarketOS)
 #
 # Put this file at: .github/workflows/build-j4primelte.yml and push.
 # Download everything from the run's "Artifacts".
+#
+# On a tag v* it also creates a GitHub Release with all files attached.
 
 on:
   push:
@@ -250,11 +252,13 @@ jobs:
       - name: Build postmarketOS rootfs
         run: |
           set -euo pipefail
-          # --password sets the user password non-interactively (used by the
-          # official images.postmarketos.org builders). --yes skips confirms.
-          # build_pkgs_on_install=False (in config) means use binary packages.
-          # --details-to-stdout keeps output flowing to avoid the 900s CI timeout.
-          pmbootstrap --details-to-stdout --yes install --password "$PMOS_PASSWORD"
+          # -y (== --assume-yes) is a GLOBAL flag and must come BEFORE the
+          # 'install' subcommand; there is no '--yes'. --password is an
+          # install-specific flag and sets the user password non-interactively
+          # (plain text in CI logs by design, per pmbootstrap). build_pkgs_
+          # on_install=False makes it use binary packages. --details-to-stdout
+          # keeps output flowing to avoid the 900s CI no-output timeout.
+          pmbootstrap -y --details-to-stdout install --password "$PMOS_PASSWORD"
           pmbootstrap status || true
 
       - name: Export images
