@@ -251,7 +251,7 @@ jobs:
           #
           # build_pkgs_on_install=False makes it use binary packages.
           # --details-to-stdout keeps output flowing to avoid CI timeout.
-          pmbootstrap -y --details-to-stout install --single-partition \
+          pmbootstrap -y --details-to-stdout install --single-partition \
             --password "$PMOS_PASSWORD"
           pmbootstrap status || true
 
